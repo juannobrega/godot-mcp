@@ -26,3 +26,7 @@ Thumbs.db
 
 # Coverage directory
 coverage/
+
+# Mounted project workspace for the Docker deployment
+workspace/*
+!workspace/.gitkeep

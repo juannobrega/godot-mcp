@@ -1,0 +1,113 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '22']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - run: npm ci --ignore-scripts
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      # The e2e suite skips itself when no engine is present, so this job
+      # covers the unit and HTTP transport tests on both Node versions.
+      - name: Test
+        run: npm test
+
+  test-with-godot:
+    runs-on: ubuntu-latest
+    env:
+      GODOT_VERSION: '4.7.2'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install Godot
+        run: |
+          set -euo pipefail
+          archive="Godot_v${GODOT_VERSION}-stable_linux.x86_64"
+          curl -fsSL -o godot.zip \
+            "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable/${archive}.zip"
+          unzip -j godot.zip -d godot-bin
+          sudo install -m 0755 "godot-bin/${archive}" /usr/local/bin/godot
+          godot --version
+
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+
+      # With the engine present the e2e suite runs for real, which is the only
+      # thing that exercises the bundled GDScript.
+      - name: Test including e2e
+        run: npm test
+        env:
+          GODOT_PATH: /usr/local/bin/godot
+
+  docker:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: godot-mcp:ci
+
+      # Proves the image actually serves, not merely that it builds
+      - name: Smoke test the image
+        run: |
+          set -euo pipefail
+          mkdir -p ./ci-workspace
+          docker run -d --name godot-mcp-ci \
+            -p 8080:8080 \
+            -e MCP_ALLOWED_HOSTS=localhost:8080,127.0.0.1:8080 \
+            -v "$PWD/ci-workspace:/workspace" \
+            godot-mcp:ci
+
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8080/healthz; then
+              echo "healthy after ${attempt}s"
+              break
+            fi
+            if [ "$attempt" -eq 30 ]; then
+              echo "server never became healthy" >&2
+              docker logs godot-mcp-ci >&2
+              exit 1
+            fi
+            sleep 1
+          done
+
+          docker exec godot-mcp-ci godot --version
+          docker logs godot-mcp-ci
+          docker rm -f godot-mcp-ci

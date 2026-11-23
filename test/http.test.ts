@@ -1,0 +1,188 @@
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+
+import { loadConfig } from '../src/config.js';
+import { buildServer, type BuiltServer } from '../src/server.js';
+import { serveHttp, type HttpHandle } from '../src/transport/http.js';
+import { silentLogger } from '../src/lib/log.js';
+
+/**
+ * Exercises the transport the deployment actually uses. Everything here runs
+ * over a real socket, so a mistake in routing, body handling or the host
+ * guard fails the suite rather than the production host.
+ */
+describe('streamable http transport', () => {
+  const PORT = '34517';
+  let built: BuiltServer;
+  let handle: HttpHandle;
+
+  beforeAll(async () => {
+    const config = loadConfig({
+      MCP_TRANSPORT: 'http',
+      MCP_HTTP_HOST: '127.0.0.1',
+      MCP_HTTP_PORT: PORT,
+      GODOT_MCP_WORKSPACE: process.cwd(),
+      MCP_ALLOWED_HOSTS: `127.0.0.1:${PORT}`,
+    });
+
+    built = buildServer(config, silentLogger);
+    handle = await serveHttp(built, config);
+  });
+
+  afterAll(async () => {
+    await handle?.close();
+    await built?.dispose();
+  });
+
+  const base = `http://127.0.0.1:${PORT}`;
+
+  it('answers the health probe the container healthcheck uses', async () => {
+    const response = await fetch(`${base}/healthz`);
+    expect(response.ok).toBe(true);
+    expect(await response.json()).toMatchObject({ status: 'ok' });
+  });
+
+  it('404s an unknown path', async () => {
+    const response = await fetch(`${base}/nope`);
+    expect(response.status).toBe(404);
+  });
+
+  it('completes an MCP handshake and lists tools', async () => {
+    const client = new Client({ name: 'http-test', version: '1' });
+    await client.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`)));
+
+    const { tools } = await client.listTools();
+    expect(tools.length).toBe(14);
+    expect(tools.map((t) => t.name)).toContain('create_scene');
+
+    await client.close();
+  });
+
+  it('calls a tool over http', async () => {
+    const client = new Client({ name: 'http-test', version: '1' });
+    await client.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`)));
+
+    const result = await client.callTool({
+      name: 'get_project_info',
+      arguments: { projectPath: 'definitely-not-a-project' },
+    });
+
+    // Reaching the project check proves routing, body parsing and dispatch
+    expect(JSON.stringify(result.content)).toContain('Not a Godot project');
+    await client.close();
+  });
+
+  // Workspace confinement is the whole reason this is safe to expose.
+  it('refuses a project path outside the workspace', async () => {
+    const client = new Client({ name: 'http-test', version: '1' });
+    await client.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`)));
+
+    const result = await client.callTool({
+      name: 'get_project_info',
+      arguments: { projectPath: '/etc' },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toContain('outside the configured workspace');
+    await client.close();
+  });
+
+  // DNS rebinding guard: a page on another origin resolving a name to this
+  // host must not be able to drive it.
+  it('rejects a request with an unexpected Host header', async () => {
+    const response = await fetch(`${base}/mcp`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        host: 'evil.example.com',
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+    });
+
+    expect(response.ok).toBe(false);
+  });
+
+  it('rejects a malformed body without crashing the server', async () => {
+    const bad = await fetch(`${base}/mcp`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: 'not json at all',
+    });
+    expect(bad.ok).toBe(false);
+
+    // Still serving afterwards
+    expect((await fetch(`${base}/healthz`)).ok).toBe(true);
+  });
+});
+
+describe('session isolation', () => {
+  const PORT = '34518';
+  let built: BuiltServer;
+  let handle: HttpHandle;
+
+  beforeAll(async () => {
+    const config = loadConfig({
+      MCP_TRANSPORT: 'http',
+      MCP_HTTP_HOST: '127.0.0.1',
+      MCP_HTTP_PORT: PORT,
+      GODOT_MCP_WORKSPACE: process.cwd(),
+      MCP_ALLOWED_HOSTS: `127.0.0.1:${PORT}`,
+    });
+    built = buildServer(config, silentLogger);
+    handle = await serveHttp(built, config);
+  });
+
+  afterAll(async () => {
+    await handle?.close();
+    await built?.dispose();
+  });
+
+  const connect = async () => {
+    const client = new Client({ name: 'iso', version: '1' });
+    await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${PORT}/mcp`)));
+    return client;
+  };
+
+  // A single shared transport rejected the second client's initialize with
+  // "Server already initialized", and a single shared server instance would
+  // have let one client's stop_project kill another client's game.
+  it('serves two clients at once, each with its own session', async () => {
+    const [first, second] = await Promise.all([connect(), connect()]);
+
+    expect(handle.sessionCount()).toBe(2);
+    await expect(first.listTools()).resolves.toMatchObject({ tools: expect.anything() });
+    await expect(second.listTools()).resolves.toMatchObject({ tools: expect.anything() });
+
+    await Promise.all([first.close(), second.close()]);
+  });
+
+  it('keeps each session’s project state separate', async () => {
+    const [first, second] = await Promise.all([connect(), connect()]);
+
+    // Neither client has a running project; each must be told so independently
+    const a = await first.callTool({ name: 'get_debug_output', arguments: {} });
+    const b = await second.callTool({ name: 'get_debug_output', arguments: {} });
+
+    expect(a.isError).toBe(true);
+    expect(b.isError).toBe(true);
+
+    await Promise.all([first.close(), second.close()]);
+  });
+
+  it('rejects a request carrying an unknown session id', async () => {
+    const response = await fetch(`http://127.0.0.1:${PORT}/mcp`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        'mcp-session-id': 'made-up-session',
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+    });
+
+    expect(response.status).toBe(404);
+  });
+});

@@ -1,0 +1,78 @@
+# Deployment for godot-mcp.software.nuvello.com.br
+#
+# The server speaks MCP over Streamable HTTP. Two settings are not optional in
+# this mode and the process refuses to start without them:
+#
+#   GODOT_MCP_WORKSPACE  every project path is confined to this directory, so a
+#                        client cannot reach arbitrary paths on the host
+#   MCP_ALLOWED_HOSTS    accepted Host headers, which is what blocks DNS
+#                        rebinding from a page in someone's browser
+
+services:
+  godot-mcp:
+    build:
+      context: .
+      args:
+        # Match the engine your projects are authored in
+        GODOT_VERSION: "4.7.2"
+    image: godot-mcp:1.1.0
+    container_name: godot-mcp
+    restart: unless-stopped
+
+    environment:
+      MCP_TRANSPORT: http
+      MCP_HTTP_HOST: 0.0.0.0
+      MCP_HTTP_PORT: "8080"
+      MCP_HTTP_ENDPOINT: /mcp
+      MCP_ALLOWED_HOSTS: godot-mcp.software.nuvello.com.br
+      MCP_ALLOWED_ORIGINS: https://godot-mcp.software.nuvello.com.br
+      GODOT_MCP_WORKSPACE: /workspace
+      GODOT_MCP_STRICT_PATHS: "true"
+      # Leave off in production: it makes the engine write temp files into
+      # projects and adds artificial delays
+      GODOT_DEBUG: "false"
+      DEBUG: "false"
+
+    volumes:
+      # The only filesystem the tools can touch. Put your Godot projects here.
+      - ./workspace:/workspace
+
+    # Godot writes its own config and import caches under HOME
+    tmpfs:
+      - /tmp
+      - /home/godot
+
+    # Not published to the host: the reverse proxy reaches it over the shared
+    # network. Expose a port here only for local testing.
+    expose:
+      - "8080"
+
+    networks:
+      - edge
+
+    security_opt:
+      - no-new-privileges:true
+
+    # Scene operations spawn a headless engine; give it room but not the host
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+
+    labels:
+      # Traefik: drop this block if you terminate TLS with nginx instead
+      traefik.enable: "true"
+      traefik.docker.network: edge
+      traefik.http.routers.godot-mcp.rule: Host(`godot-mcp.software.nuvello.com.br`)
+      traefik.http.routers.godot-mcp.entrypoints: websecure
+      traefik.http.routers.godot-mcp.tls: "true"
+      traefik.http.routers.godot-mcp.tls.certresolver: letsencrypt
+      traefik.http.services.godot-mcp.loadbalancer.server.port: "8080"
+      # Streamable HTTP keeps an SSE stream open; a short proxy timeout cuts it
+      traefik.http.services.godot-mcp.loadbalancer.responseforwarding.flushinterval: 100ms
+
+networks:
+  edge:
+    external: true
+    name: edge

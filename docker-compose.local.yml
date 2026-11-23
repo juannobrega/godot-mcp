@@ -1,0 +1,17 @@
+# Local override: publish the port directly and skip the reverse proxy.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml up --build
+#
+# Then point an MCP client at http://localhost:8080/mcp
+
+services:
+  godot-mcp:
+    environment:
+      MCP_ALLOWED_HOSTS: localhost,127.0.0.1,localhost:8080,127.0.0.1:8080
+      MCP_ALLOWED_ORIGINS: http://localhost:8080,http://127.0.0.1:8080
+      DEBUG: "true"
+    ports:
+      - "8080:8080"
+    labels:
+      traefik.enable: "false"
+    networks: !reset []

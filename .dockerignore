@@ -1,0 +1,13 @@
+.git
+.github
+node_modules
+build
+test
+coverage
+*.log
+.DS_Store
+Dockerfile
+docker-compose*.yml
+.dockerignore
+README.md
+CONTRIBUTING.md

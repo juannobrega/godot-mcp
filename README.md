@@ -53,108 +53,56 @@
                          |__/     |__/ \______/ |__/
 ```
 
-A Model Context Protocol (MCP) server for interacting with the Godot game engine.
+A Model Context Protocol (MCP) server for the Godot game engine.
 
-## Introduction
+It lets an AI agent launch the editor, run a project and read its output, and
+edit scenes — so the agent can see what actually happens in a real Godot
+project instead of guessing.
 
-Godot MCP enables AI agents to launch the Godot editor, run projects, capture debug output, and control project execution. This direct feedback loop helps agents understand what works and what doesn't in real Godot projects, leading to better code generation and debugging assistance.
+## Tools
 
-## Features
+| Tool | What it does |
+|------|--------------|
+| `launch_editor` | Open the Godot editor for a project |
+| `run_project` | Run a project in debug mode and start capturing output |
+| `get_debug_output` | Read the running project's output and errors |
+| `stop_project` | Stop the running project and return its final output |
+| `get_godot_version` | Report the engine version in use |
+| `list_projects` | Find Godot projects in a directory |
+| `get_project_info` | Project name, path, engine version and file counts |
+| `create_scene` | Create a scene with a given root node type |
+| `add_node` | Add a node to an existing scene, with properties |
+| `load_sprite` | Set a texture on a Sprite2D, Sprite3D or TextureRect |
+| `save_scene` | Re-save a scene, optionally to a new path |
+| `export_mesh_library` | Export a 3D scene as a MeshLibrary for GridMap |
+| `get_uid` | Get a file's Godot UID (4.4+) |
+| `update_project_uids` | Re-save resources to refresh UID references (4.4+) |
 
-- **Launch Godot Editor**: Open the Godot editor for a specific project
-- **Run Godot Projects**: Execute Godot projects in debug mode
-- **Capture Debug Output**: Retrieve console output and error messages
-- **Control Execution**: Start and stop Godot projects programmatically
-- **Get Godot Version**: Retrieve the installed Godot version
-- **List Godot Projects**: Find Godot projects in a specified directory
-- **Project Analysis**: Get detailed information about project structure
-- **Scene Management**:
-  - Create new scenes with specified root node types
-  - Add nodes to existing scenes with customizable properties
-  - Load sprites and textures into Sprite2D nodes
-  - Export 3D scenes as MeshLibrary resources for GridMap
-  - Save scenes with options for creating variants
-- **UID Management** (for Godot 4.4+):
-  - Get UID for specific files
-  - Update UID references by resaving resources
+Arguments are camelCase (`projectPath`), and `snake_case` (`project_path`) is
+accepted as an alias.
 
 ## Requirements
 
-- [Godot Engine](https://godotengine.org/download) installed on your system
-- Node.js (>=18.0.0) and npm
-- An AI agent that supports MCP
+- [Godot](https://godotengine.org/download) installed
+- Node.js 20 or later
+- An MCP-capable client
 
-## Quick Start
-
-### Claude Code
+## Quick start (local, stdio)
 
 ```bash
 claude mcp add godot -- npx @coding-solo/godot-mcp
 ```
 
-That's it. Restart Claude Code and your Godot MCP tools are available.
-
-With environment variables:
+Restart your client and the tools are available. To pin the engine explicitly:
 
 ```bash
-claude mcp add godot -e GODOT_PATH=/path/to/godot -e DEBUG=true -- npx @coding-solo/godot-mcp
+claude mcp add godot -e GODOT_PATH=/path/to/godot -- npx @coding-solo/godot-mcp
 ```
-
-<details>
-<summary><strong>Cline</strong></summary>
-
-Add to your Cline MCP settings file (`~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`):
-
-```json
-{
-  "mcpServers": {
-    "godot": {
-      "command": "npx",
-      "args": ["@coding-solo/godot-mcp"],
-      "env": {
-        "DEBUG": "true"
-      },
-      "disabled": false,
-      "autoApprove": [
-        "launch_editor",
-        "run_project",
-        "get_debug_output",
-        "stop_project",
-        "get_godot_version",
-        "list_projects",
-        "get_project_info",
-        "create_scene",
-        "add_node",
-        "load_sprite",
-        "export_mesh_library",
-        "save_scene",
-        "get_uid",
-        "update_project_uids"
-      ]
-    }
-  }
-}
-```
-
-</details>
 
 <details>
 <summary><strong>Cursor</strong></summary>
 
-**Using the Cursor UI:**
-
-1. Go to **Cursor Settings** > **Features** > **MCP**
-2. Click on the **+ Add New MCP Server** button
-3. Fill out the form:
-   - Name: `godot`
-   - Type: `command`
-   - Command: `npx @coding-solo/godot-mcp`
-4. Click "Add"
-5. You may need to press the refresh button in the top right corner of the MCP server card to populate the tool list
-
-**Using Project-Specific Configuration:**
-
-Create a file at `.cursor/mcp.json` in your project directory:
+Create `.cursor/mcp.json` in your project:
 
 ```json
 {
@@ -162,9 +110,7 @@ Create a file at `.cursor/mcp.json` in your project directory:
     "godot": {
       "command": "npx",
       "args": ["@coding-solo/godot-mcp"],
-      "env": {
-        "DEBUG": "true"
-      }
+      "env": { "GODOT_PATH": "/path/to/godot" }
     }
   }
 }
@@ -173,9 +119,9 @@ Create a file at `.cursor/mcp.json` in your project directory:
 </details>
 
 <details>
-<summary><strong>Other MCP Clients</strong></summary>
+<summary><strong>Cline</strong></summary>
 
-For any MCP-compatible client, use this configuration:
+Add to `cline_mcp_settings.json`:
 
 ```json
 {
@@ -183,10 +129,7 @@ For any MCP-compatible client, use this configuration:
     "godot": {
       "command": "npx",
       "args": ["@coding-solo/godot-mcp"],
-      "env": {
-        "GODOT_PATH": "/path/to/godot",
-        "DEBUG": "true"
-      }
+      "env": { "GODOT_PATH": "/path/to/godot" }
     }
   }
 }
@@ -194,53 +137,112 @@ For any MCP-compatible client, use this configuration:
 
 </details>
 
-### Environment Variables
-
-| Variable | Description |
-|----------|-------------|
-| `GODOT_PATH` | Path to the Godot executable (overrides automatic detection) |
-| `DEBUG` | Set to `"true"` to enable detailed server-side debug logging |
-
 <details>
-<summary><strong>Building from Source</strong></summary>
+<summary><strong>Building from source</strong></summary>
 
 ```bash
 git clone https://github.com/Coding-Solo/godot-mcp.git
 cd godot-mcp
 npm install
 npm run build
+npm test
 ```
 
-Then point your MCP client to `build/index.js` instead of using `npx`.
+Then point your client at `build/index.js`.
 
 </details>
 
+## Remote deployment (HTTP)
 
-## Architecture
+The server also speaks MCP over Streamable HTTP, which is how it runs at
+`godot-mcp.software.nuvello.com.br`.
 
-The Godot MCP server uses a bundled GDScript approach for complex operations:
+```bash
+docker compose up -d --build
+```
 
-1. **Direct Commands**: Simple operations like launching the editor or getting project info use Godot's built-in CLI commands directly.
-2. **Bundled Operations Script**: Complex operations like creating scenes or adding nodes use a single, comprehensive GDScript file (`godot_operations.gd`) that handles all operations.
+Two things change when the server is reachable over a network, and the process
+**refuses to start** without them:
 
-The bundled script accepts operation type and parameters as JSON, allowing for flexible and dynamic operation execution without generating temporary files for each operation.
+- **`GODOT_MCP_WORKSPACE`** — every project path is confined to this directory.
+  The tools read and write files; without confinement, anyone who can reach the
+  server could address any path on the host.
+- **`MCP_ALLOWED_HOSTS`** — the accepted `Host` headers. This is what stops DNS
+  rebinding, where a page on another origin points a name at this server and
+  drives it from a visitor's browser.
+
+Put your Godot projects under `./workspace`, and pass `projectPath` relative to
+it (`my-game`, not `/home/you/my-game`).
+
+Each client session gets its own server instance, so one client's
+`stop_project` cannot kill another client's run. `GET /healthz` is a liveness
+probe for the container and the reverse proxy.
+
+To run it locally without a reverse proxy:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.local.yml up --build
+# then point a client at http://localhost:8080/mcp
+```
+
+## Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GODOT_PATH` | auto-detected | Path to the Godot executable |
+| `DEBUG` | `false` | Verbose server logging (to stderr) |
+| `GODOT_DEBUG` | `false` | Verbose logging inside the bundled GDScript. Leave off: its debug paths write temp files into your project and add delays |
+| `GODOT_MCP_STRICT_PATHS` | `false` | Exit at startup instead of serving with an unusable Godot path |
+| `GODOT_MCP_WORKSPACE` | unset | Confine every project path to this directory. **Required for HTTP** |
+| `MCP_TRANSPORT` | `stdio` | `stdio` or `http` |
+| `MCP_HTTP_HOST` | `0.0.0.0` | Bind address (HTTP) |
+| `MCP_HTTP_PORT` | `8080` | Port (HTTP) |
+| `MCP_HTTP_ENDPOINT` | `/mcp` | MCP endpoint path (HTTP) |
+| `MCP_ALLOWED_HOSTS` | unset | Comma-separated accepted `Host` headers. **Required for HTTP** |
+| `MCP_ALLOWED_ORIGINS` | unset | Comma-separated accepted `Origin` headers |
+| `GODOT_MCP_TIMEOUT_MS` | `120000` | Per-operation timeout |
+| `GODOT_MCP_MAX_BUFFER` | `33554432` | Max bytes captured from one operation |
+| `GODOT_MCP_MAX_SCAN_DEPTH` | `8` | Directory recursion limit |
+| `GODOT_MCP_MAX_OUTPUT_LINES` | `5000` | Retained output lines per run |
+
+## How it works
+
+```
+src/
+  index.ts          entrypoint: load config, probe Godot, pick a transport
+  config.ts         typed configuration, with the HTTP safety checks
+  server.ts         builds an McpServer and registers every tool
+  lib/              logging, tool errors, path containment
+  godot/            engine location, operation execution, running projects, scanning
+  tools/            one module per tool group, each with its Zod schema
+  transport/        stdio and Streamable HTTP, plus the snake_case alias shim
+  scripts/
+    godot_operations.gd   the bundled GDScript all scene edits go through
+```
+
+Simple things (launching the editor, reading the version) use Godot's CLI
+directly. Scene edits go through a single bundled GDScript that receives its
+operation name and parameters as JSON, so no temporary script is written per
+call.
+
+Every invocation uses `execFile` with an argument array, never a shell string,
+so no caller-supplied value is ever interpreted as a command. Node types are
+restricted to bare class names, which is what prevents a caller from
+instantiating an arbitrary script.
 
 ## Troubleshooting
 
-- **Godot Not Found**: Set the `GODOT_PATH` environment variable to your Godot executable path
-- **Connection Issues**: Ensure the server is running and restart your AI assistant
-- **Invalid Project Path**: Ensure the path points to a directory containing a `project.godot` file
-- **Build Issues**: Make sure all dependencies are installed by running `npm install`
-
-<details>
-<summary><strong>Cursor-Specific Issues</strong></summary>
-
-- Ensure the MCP server shows up and is enabled in Cursor settings (Settings > MCP)
-- MCP tools can only be run using the Agent chat profile (Cursor Pro or Business subscription)
-- Use "Yolo Mode" to automatically run MCP tool requests
-
-</details>
+- **Godot not found** — set `GODOT_PATH`. Add `GODOT_MCP_STRICT_PATHS=true` to
+  fail loudly at startup instead of on the first tool call.
+- **"Not a Godot project"** — `projectPath` must name a directory containing a
+  `project.godot` file. Use `list_projects` to find them.
+- **"outside the configured workspace"** — on HTTP, paths are relative to
+  `GODOT_MCP_WORKSPACE`.
+- **An operation was "killed before finishing"** — it hit
+  `GODOT_MCP_TIMEOUT_MS` or the output limit.
+- **Connection issues over HTTP** — check that the request's `Host` header is
+  listed in `MCP_ALLOWED_HOSTS`.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT — see [LICENSE](LICENSE).
