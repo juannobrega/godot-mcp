@@ -81,6 +81,10 @@ project instead of guessing.
 Arguments are camelCase (`projectPath`), and `snake_case` (`project_path`) is
 accepted as an alias.
 
+`load_sprite` runs Godot's import pass first when the texture has no
+`.import` sibling yet, since a file just added to the project cannot be
+loaded until the engine has imported it.
+
 ## Requirements
 
 - [Godot](https://godotengine.org/download) installed

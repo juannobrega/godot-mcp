@@ -162,6 +162,77 @@ describeE2E('end to end against a real Godot', () => {
     expect(result.isError ?? false).toBe(!supported);
   });
 
+  it('loads a texture into a sprite node', async () => {
+    // An 8x8 RGBA PNG. A 1x1 image is rejected by Godot's texture
+    // importer (it writes valid=false and no .ctex), so the fixture has to be
+    // large enough to actually import.
+    const png = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAgUlEQVR4nBXOQREAQAjDQKQgBSlIqRSkIAUnvdxzZ/JIRMgZcoXcIQsPXnw4IuVMuVLulIUHL778QclZcpXcJQsPXnz1g5az5Wq5WxYevPj6B+JBPIgH8YAHLz79YHgYHoaH4QEPXnzzg+VheVgelgc8ePHtD46H4+F4OB7w4MWHH/qRl8FweERHAAAAAElFTkSuQmCC',
+      'base64',
+    );
+    mkdirSync(join(project, 'art'), { recursive: true });
+    writeFileSync(join(project, 'art', 'dot.png'), png);
+
+    const result = await client.callTool({
+      name: 'load_sprite',
+      arguments: {
+        projectPath: project,
+        scenePath: 'scenes/Main.tscn',
+        nodePath: 'root/Hero',
+        texturePath: 'art/dot.png',
+      },
+    });
+
+    expect(result.isError, text(result)).toBeFalsy();
+  });
+
+  it('rejects loading a texture into a node that cannot hold one', async () => {
+    const result = await client.callTool({
+      name: 'load_sprite',
+      arguments: {
+        projectPath: project,
+        scenePath: 'scenes/Main.tscn',
+        nodePath: 'root',
+        texturePath: 'art/dot.png',
+      },
+    });
+
+    expect(result.isError).toBe(true);
+  });
+
+  it('reports a UID lookup for a project file', async () => {
+    writeFileSync(join(project, 'player.gd'), 'extends Node');
+    const supported = await built.context.godot.supportsUids();
+
+    const result = await client.callTool({
+      name: 'get_uid',
+      arguments: { projectPath: project, filePath: 'player.gd' },
+    });
+
+    if (supported) {
+      expect(result.isError, text(result)).toBeFalsy();
+      expect(text(result)).toContain('player.gd');
+    } else {
+      expect(result.isError).toBe(true);
+    }
+  });
+
+  // A 2D scene has no meshes, so the correct outcome is a reported failure
+  // rather than an empty MeshLibrary written to disk.
+  it('reports a MeshLibrary export with no meshes as an error', async () => {
+    const result = await client.callTool({
+      name: 'export_mesh_library',
+      arguments: {
+        projectPath: project,
+        scenePath: 'scenes/Main.tscn',
+        outputPath: 'meshes/empty.res',
+      },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(existsSync(join(project, 'meshes', 'empty.res'))).toBe(false);
+  });
+
   it('refuses a scene path that escapes the project', async () => {
     const result = await client.callTool({
       name: 'create_scene',

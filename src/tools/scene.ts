@@ -1,3 +1,6 @@
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
@@ -105,6 +108,13 @@ export function registerSceneTools(server: McpServer, context: ToolContext): voi
       const root = requireProject(context, args.projectPath);
       const scene = requireExistingFile(root, args.scenePath, 'scenePath');
       const texture = requireExistingFile(root, args.texturePath, 'texturePath');
+
+      // A texture written into the project moments ago has no .import sibling
+      // yet, and load() fails on it until Godot's import pass has run.
+      if (!existsSync(join(root, `${texture}.import`))) {
+        context.logger.info(`${texture} is not imported yet; running Godot's import pass`);
+        await context.godot.runImport(root);
+      }
 
       await runOperation(
         context,

@@ -71,6 +71,31 @@ export class GodotBinary {
   }
 
   /**
+   * Run Godot's asset import pass.
+   *
+   * Godot resolves textures, models and audio through its import system, which
+   * normally only runs in the editor. A file just written into the project has
+   * no .import sibling and cannot be loaded until this has seen it.
+   */
+  async runImport(projectPath: string): Promise<void> {
+    const godotPath = await this.resolvePath();
+    this.logger.debug(`Importing assets in ${projectPath}`);
+
+    try {
+      await execFileAsync(godotPath, ['--headless', '--path', projectPath, '--import'], {
+        timeout: this.config.operationTimeoutMs,
+        maxBuffer: this.config.operationMaxBuffer,
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new ToolError(`Godot could not import the project's assets: ${detail}`, [
+        'Open the project in the editor once to complete the initial import',
+        'Check that the project has no import errors',
+      ]);
+    }
+  }
+
+  /**
    * Run one operation through the bundled GDScript.
    *
    * Returns the real exit code so callers can tell failure from success. The
