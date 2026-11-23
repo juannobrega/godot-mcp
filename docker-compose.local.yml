@@ -1,17 +1,21 @@
-# Local override: publish the port directly and skip the reverse proxy.
+# Local run, without Coolify or any reverse proxy.
 #
 #   docker compose -f docker-compose.yml -f docker-compose.local.yml up --build
 #
-# Then point an MCP client at http://localhost:8080/mcp
+# Then point an MCP client at http://localhost:8086/mcp
+#
+# The magic SERVICE_FQDN variable means nothing outside Coolify, so the host
+# allowlist is set explicitly here instead.
 
 services:
   godot-mcp:
     environment:
-      MCP_ALLOWED_HOSTS: localhost,127.0.0.1,localhost:8080,127.0.0.1:8080
-      MCP_ALLOWED_ORIGINS: http://localhost:8080,http://127.0.0.1:8080
+      SERVICE_FQDN_GODOT_MCP_8086: ""
+      MCP_ALLOWED_HOSTS: localhost,127.0.0.1,localhost:8086,127.0.0.1:8086
+      MCP_ALLOWED_ORIGINS: http://localhost:8086,http://127.0.0.1:8086
       DEBUG: "true"
     ports:
-      - "8080:8080"
-    labels:
-      traefik.enable: "false"
-    networks: !reset []
+      - "8086:8086"
+    volumes:
+      # A real directory, so you can drop projects straight in
+      - ./workspace:/workspace

@@ -1,12 +1,22 @@
-# Deployment for godot-mcp.software.nuvello.com.br
+# Deployment for Coolify, which manages Traefik itself.
 #
-# The server speaks MCP over Streamable HTTP. Two settings are not optional in
-# this mode and the process refuses to start without them:
+# Coolify generates the proxy labels and the resource network, so none of that
+# is declared here — hand-written Traefik labels would fight the ones it adds.
+# The domain comes from Coolify: declaring SERVICE_FQDN_GODOT_MCP_8086 makes it
+# assign a domain to this service and route it to container port 8086.
 #
-#   GODOT_MCP_WORKSPACE  every project path is confined to this directory, so a
-#                        client cannot reach arbitrary paths on the host
+# The magic variable name is the compose service name uppercased with hyphens
+# turned into underscores, plus the port suffix: godot-mcp -> GODOT_MCP_8086.
+#
+# Two settings are not optional once the server is reachable over a network,
+# and the process refuses to start without them:
+#
+#   GODOT_MCP_WORKSPACE  confines every project path to one directory, so a
+#                        client cannot address arbitrary paths on the host
 #   MCP_ALLOWED_HOSTS    accepted Host headers, which is what blocks DNS
 #                        rebinding from a page in someone's browser
+#
+# Both are satisfied below without repeating the domain anywhere.
 
 services:
   godot-mcp:
@@ -15,40 +25,43 @@ services:
       args:
         # Match the engine your projects are authored in
         GODOT_VERSION: "4.7.2"
-    image: godot-mcp:1.1.0
-    container_name: godot-mcp
-    restart: unless-stopped
 
     environment:
+      # Asks Coolify for a domain and routes it to port 8086 at path /
+      SERVICE_FQDN_GODOT_MCP_8086: /
+
       MCP_TRANSPORT: http
       MCP_HTTP_HOST: 0.0.0.0
-      MCP_HTTP_PORT: "8080"
+      MCP_HTTP_PORT: "8086"
       MCP_HTTP_ENDPOINT: /mcp
-      MCP_ALLOWED_HOSTS: godot-mcp.software.nuvello.com.br
-      MCP_ALLOWED_ORIGINS: https://godot-mcp.software.nuvello.com.br
+
+      # Traefik forwards the public Host header through, so the domain Coolify
+      # assigned is exactly what has to be accepted here
+      MCP_ALLOWED_HOSTS: ${SERVICE_FQDN_GODOT_MCP_8086}
+      MCP_ALLOWED_ORIGINS: ${SERVICE_URL_GODOT_MCP_8086}
+
       GODOT_MCP_WORKSPACE: /workspace
       GODOT_MCP_STRICT_PATHS: "true"
-      # Leave off in production: it makes the engine write temp files into
-      # projects and adds artificial delays
+
+      # Leave off in production: Godot's debug paths write temp files into
+      # projects and add artificial delays
       GODOT_DEBUG: "false"
       DEBUG: "false"
 
     volumes:
-      # The only filesystem the tools can touch. Put your Godot projects here.
-      - ./workspace:/workspace
+      # Named so it survives redeploys. This is the only filesystem the tools
+      # can reach; see the README for getting projects into it.
+      - godot-projects:/workspace
 
     # Godot writes its own config and import caches under HOME
     tmpfs:
       - /tmp
       - /home/godot
 
-    # Not published to the host: the reverse proxy reaches it over the shared
-    # network. Expose a port here only for local testing.
+    # Not published to a host interface: Coolify's proxy reaches the container
+    # over the network it manages. Publishing would bypass the proxy.
     expose:
-      - "8080"
-
-    networks:
-      - edge
+      - "8086"
 
     security_opt:
       - no-new-privileges:true
@@ -60,19 +73,5 @@ services:
           cpus: "2.0"
           memory: 2G
 
-    labels:
-      # Traefik: drop this block if you terminate TLS with nginx instead
-      traefik.enable: "true"
-      traefik.docker.network: edge
-      traefik.http.routers.godot-mcp.rule: Host(`godot-mcp.software.nuvello.com.br`)
-      traefik.http.routers.godot-mcp.entrypoints: websecure
-      traefik.http.routers.godot-mcp.tls: "true"
-      traefik.http.routers.godot-mcp.tls.certresolver: letsencrypt
-      traefik.http.services.godot-mcp.loadbalancer.server.port: "8080"
-      # Streamable HTTP keeps an SSE stream open; a short proxy timeout cuts it
-      traefik.http.services.godot-mcp.loadbalancer.responseforwarding.flushinterval: 100ms
-
-networks:
-  edge:
-    external: true
-    name: edge
+volumes:
+  godot-projects:

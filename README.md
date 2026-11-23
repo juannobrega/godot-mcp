@@ -161,12 +161,32 @@ Then point your client at `build/index.js`.
 The server also speaks MCP over Streamable HTTP, which is how it runs at
 `godot-mcp.software.nuvello.com.br`.
 
-```bash
-docker compose up -d --build
+### Coolify
+
+`docker-compose.yml` is written for Coolify, which manages Traefik itself.
+Deploy it as a **Docker Compose** resource pointed at this repository. Coolify
+generates the proxy labels and the network, so none of that is in the compose
+file — hand-written Traefik labels would fight the ones it adds.
+
+The domain comes from Coolify. Declaring this in the service environment is
+what asks for one and routes it to the container:
+
+```yaml
+SERVICE_FQDN_GODOT_MCP_8086: /
+MCP_ALLOWED_HOSTS: ${SERVICE_FQDN_GODOT_MCP_8086}
+MCP_ALLOWED_ORIGINS: ${SERVICE_URL_GODOT_MCP_8086}
 ```
 
-Two things change when the server is reachable over a network, and the process
-**refuses to start** without them:
+The magic variable name is the compose service name uppercased with hyphens
+turned into underscores, plus the port: `godot-mcp` → `GODOT_MCP_8086`.
+`SERVICE_FQDN_*` is the domain without a scheme and `SERVICE_URL_*` includes
+it, which is exactly what the two allowlists want — so the domain is never
+written down twice and never drifts from whatever Coolify assigned.
+
+### What changes when it is reachable over a network
+
+Two settings are not optional in HTTP mode, and the process **refuses to
+start** without them:
 
 - **`GODOT_MCP_WORKSPACE`** — every project path is confined to this directory.
   The tools read and write files; without confinement, anyone who can reach the
@@ -175,19 +195,43 @@ Two things change when the server is reachable over a network, and the process
   rebinding, where a page on another origin points a name at this server and
   drives it from a visitor's browser.
 
-Put your Godot projects under `./workspace`, and pass `projectPath` relative to
-it (`my-game`, not `/home/you/my-game`).
+Pass `projectPath` relative to the workspace (`my-game`, not
+`/home/you/my-game`). A path that resolves outside it is refused, symlinks
+included.
 
 Each client session gets its own server instance, so one client's
-`stop_project` cannot kill another client's run. `GET /healthz` is a liveness
-probe for the container and the reverse proxy.
+`stop_project` cannot kill another client's run. `GET /healthz` is the
+liveness probe used by the container healthcheck and the proxy.
 
-To run it locally without a reverse proxy:
+### Getting projects into the workspace
+
+The workspace is a named Docker volume (`godot-projects`) so it survives
+redeploys. From Coolify's terminal for the container:
+
+```bash
+cd /workspace
+git clone https://your-git-host/your-game.git
+```
+
+Or copy from the host:
+
+```bash
+docker cp ./my-game <container>:/workspace/
+```
+
+To mount a host directory instead, replace the volume with an absolute bind
+mount in Coolify's compose editor.
+
+### Running it locally
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.local.yml up --build
-# then point a client at http://localhost:8080/mcp
+# then point a client at http://localhost:8086/mcp
 ```
+
+The override publishes the port, sets the host allowlist explicitly (the magic
+variable means nothing outside Coolify) and bind-mounts `./workspace` so you
+can drop projects straight in.
 
 ## Configuration
 
@@ -200,7 +244,7 @@ docker compose -f docker-compose.yml -f docker-compose.local.yml up --build
 | `GODOT_MCP_WORKSPACE` | unset | Confine every project path to this directory. **Required for HTTP** |
 | `MCP_TRANSPORT` | `stdio` | `stdio` or `http` |
 | `MCP_HTTP_HOST` | `0.0.0.0` | Bind address (HTTP) |
-| `MCP_HTTP_PORT` | `8080` | Port (HTTP) |
+| `MCP_HTTP_PORT` | `8086` | Port (HTTP) |
 | `MCP_HTTP_ENDPOINT` | `/mcp` | MCP endpoint path (HTTP) |
 | `MCP_ALLOWED_HOSTS` | unset | Comma-separated accepted `Host` headers. **Required for HTTP** |
 | `MCP_ALLOWED_ORIGINS` | unset | Comma-separated accepted `Origin` headers |

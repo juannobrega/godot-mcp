@@ -90,13 +90,13 @@ jobs:
           set -euo pipefail
           mkdir -p ./ci-workspace
           docker run -d --name godot-mcp-ci \
-            -p 8080:8080 \
-            -e MCP_ALLOWED_HOSTS=localhost:8080,127.0.0.1:8080 \
+            -p 8086:8086 \
+            -e MCP_ALLOWED_HOSTS=localhost:8086,127.0.0.1:8086 \
             -v "$PWD/ci-workspace:/workspace" \
             godot-mcp:ci
 
           for attempt in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8080/healthz; then
+            if curl -fsS http://127.0.0.1:8086/healthz; then
               echo "healthy after ${attempt}s"
               break
             fi

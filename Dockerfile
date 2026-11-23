@@ -81,17 +81,17 @@ ENV NODE_ENV=production \
     GODOT_PATH=/usr/local/bin/godot \
     MCP_TRANSPORT=http \
     MCP_HTTP_HOST=0.0.0.0 \
-    MCP_HTTP_PORT=8080 \
+    MCP_HTTP_PORT=8086 \
     MCP_HTTP_ENDPOINT=/mcp \
     GODOT_MCP_WORKSPACE=/workspace \
     GODOT_MCP_STRICT_PATHS=true
 
 USER godot
-EXPOSE 8080
+EXPOSE 8086
 VOLUME ["/workspace"]
 
 # Verifies the process is serving, not merely that it started
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:'+(process.env.MCP_HTTP_PORT||8080)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.MCP_HTTP_PORT||8086)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 CMD ["node", "build/index.js"]

@@ -55,6 +55,6 @@ describe('loadConfig', () => {
   it('falls back to defaults for unparseable numbers', () => {
     const config = loadConfig({ GODOT_MCP_TIMEOUT_MS: 'abc', MCP_HTTP_PORT: '-5' });
     expect(config.operationTimeoutMs).toBe(120_000);
-    expect(config.http.port).toBe(8080);
+    expect(config.http.port).toBe(8086);
   });
 });

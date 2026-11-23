@@ -51,7 +51,7 @@ const DEFAULTS = {
   operationMaxBuffer: 32 * 1024 * 1024,
   maxScanDepth: 8,
   maxOutputLines: 5_000,
-  httpPort: 8080,
+  httpPort: 8086,
   httpHost: '0.0.0.0',
   httpEndpoint: '/mcp',
 } as const;
