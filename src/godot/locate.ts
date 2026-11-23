@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { normalize } from 'node:path';
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 
 import type { Logger } from '../lib/log.js';
@@ -50,20 +50,59 @@ export function candidatePaths(platform: string, env: NodeJS.ProcessEnv): string
  * may be a stale symlink or a file that is not the engine at all.
  */
 export async function probeGodotPath(path: string, logger: Logger): Promise<boolean> {
+  return probeGodotPathForReason(path, logger) === null;
+}
+
+/**
+ * Probe a candidate, returning why it is unusable, or null when it works.
+ *
+ * The reason matters for an explicitly configured path: "not usable" alone
+ * leaves no way to tell a missing file from a wrong architecture from a
+ * missing shared library, which is the difference between a one-line fix and
+ * an afternoon.
+ */
+export function probeGodotPathForReason(path: string, logger: Logger): string | null {
   // "godot" may resolve via PATH, so skip the existence check for it
   if (path !== 'godot' && !existsSync(path)) {
     logger.debug(`Godot candidate does not exist: ${path}`);
-    return false;
+    return 'file does not exist';
   }
 
   try {
-    await execFileAsync(path, ['--version'], { timeout: PROBE_TIMEOUT_MS });
+    execFileSync(path, ['--version'], { timeout: PROBE_TIMEOUT_MS, stdio: 'pipe' });
     logger.debug(`Godot candidate is valid: ${path}`);
-    return true;
+    return null;
   } catch (error) {
-    logger.debug(`Godot candidate failed to run: ${path} (${error})`);
-    return false;
+    const reason = describeProbeFailure(error);
+    logger.debug(`Godot candidate failed to run: ${path} (${reason})`);
+    return reason;
   }
+}
+
+/**
+ * Turn an exec failure into something actionable.
+ *
+ * ENOEXEC and "cannot execute binary file" mean the binary was built for a
+ * different architecture, which is what a container image assembled on the
+ * wrong platform looks like. A missing shared library surfaces on stderr.
+ */
+function describeProbeFailure(error: unknown): string {
+  const failure = error as Error & { code?: string | number; stderr?: Buffer | string };
+  const stderr = failure?.stderr ? failure.stderr.toString().trim() : '';
+
+  if (failure?.code === 'ENOEXEC' || /cannot execute binary file|Exec format error/i.test(stderr)) {
+    return `wrong architecture for this machine — the binary cannot be executed here (${stderr || 'ENOEXEC'})`;
+  }
+
+  if (/error while loading shared libraries|No such file or directory/i.test(stderr)) {
+    return `a required shared library is missing: ${stderr}`;
+  }
+
+  if (failure?.code === 'EACCES') {
+    return 'not executable (permission denied)';
+  }
+
+  return stderr || failure?.message || String(error);
 }
 
 export interface LocateOptions {
@@ -87,8 +126,12 @@ export async function locateGodot(options: LocateOptions): Promise<string | null
 
   if (explicitPath) {
     const normalized = normalize(explicitPath);
-    if (await probeGodotPath(normalized, logger)) return normalized;
-    logger.warn(`Configured Godot path is not usable: ${normalized}`);
+    const reason = probeGodotPathForReason(normalized, logger);
+    if (reason === null) return normalized;
+
+    // An explicitly configured path that fails is a misconfiguration, not a
+    // candidate that happened to miss, so say exactly what went wrong.
+    logger.warn(`Configured Godot path ${normalized} is not usable: ${reason}`);
   }
 
   for (const candidate of candidatePaths(platform, env)) {

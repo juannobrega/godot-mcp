@@ -22,18 +22,24 @@ RUN npm run build && npm prune --omit=dev
 FROM debian:bookworm-slim AS engine
 
 ARG GODOT_VERSION=4.7.2
-# Set by BuildKit; defaulted so a plain `docker build` still works
-ARG TARGETARCH=amd64
+# Normally injected by BuildKit. Left empty so that when it is not injected we
+# fall back to the real machine architecture instead of silently assuming one:
+# defaulting to amd64 produced an image that built fine on arm64 and then could
+# not execute the engine at all.
+ARG TARGETARCH=""
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl unzip \
  && rm -rf /var/lib/apt/lists/*
 
+# The case below accepts both vocabularies, since BuildKit says amd64/arm64
+# while uname says x86_64/aarch64.
 RUN set -eux; \
-    case "${TARGETARCH}" in \
-      amd64) godot_arch=x86_64 ;; \
-      arm64) godot_arch=arm64 ;; \
-      *) echo "Unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; \
+    arch="${TARGETARCH:-$(uname -m)}"; \
+    case "${arch}" in \
+      amd64|x86_64)  godot_arch=x86_64 ;; \
+      arm64|aarch64) godot_arch=arm64 ;; \
+      *) echo "Unsupported architecture: ${arch}" >&2; exit 1 ;; \
     esac; \
     archive="Godot_v${GODOT_VERSION}-stable_linux.${godot_arch}"; \
     curl -fsSL -o /tmp/godot.zip \
@@ -63,6 +69,12 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=engine /usr/local/bin/godot /usr/local/bin/godot
+
+# Fail the build rather than the container. A wrong architecture or a missing
+# shared library is invisible until the engine is actually executed, and a
+# container that cannot run Godot is useless — better to find out here, with
+# the real error, than in a restart loop at deploy time.
+RUN godot --version
 
 # Unprivileged: this process accepts paths from the network and writes files
 RUN useradd --create-home --shell /usr/sbin/nologin --uid 10001 godot \

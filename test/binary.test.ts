@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import { isGodot44OrLater, operationFailed, toGdScriptParams } from '../src/godot/binary.js';
-import { candidatePaths } from '../src/godot/locate.js';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { candidatePaths, probeGodotPathForReason } from '../src/godot/locate.js';
+import { silentLogger } from '../src/lib/log.js';
 
 describe('toGdScriptParams', () => {
   it('converts top-level keys to the GDScript vocabulary', () => {
@@ -68,5 +73,34 @@ describe('candidatePaths', () => {
     expect(candidatePaths('darwin', {}).some((p) => p.includes('Godot.app'))).toBe(true);
     expect(candidatePaths('win32', {}).some((p) => p.endsWith('Godot.exe'))).toBe(true);
     expect(candidatePaths('linux', {})).toContain('/usr/bin/godot');
+  });
+});
+
+describe('probeGodotPathForReason', () => {
+  // The reason is what turns "not usable" into something fixable. These are
+  // the three failures that actually happen in a container.
+  it('reports a missing file', () => {
+    expect(probeGodotPathForReason('/nonexistent/godot', silentLogger)).toBe('file does not exist');
+  });
+
+  it('reports a binary that is not executable as such', () => {
+    const notAnEngine = join(mkdtempSync(join(tmpdir(), 'godot-mcp-probe-')), 'godot');
+    writeFileSync(notAnEngine, 'not a binary at all\n', { mode: 0o755 });
+
+    const reason = probeGodotPathForReason(notAnEngine, silentLogger);
+    expect(reason).not.toBeNull();
+    expect(reason).not.toBe('file does not exist');
+  });
+
+  it('reports a file without the execute bit', () => {
+    const unexecutable = join(mkdtempSync(join(tmpdir(), 'godot-mcp-probe-')), 'godot');
+    writeFileSync(unexecutable, 'x', { mode: 0o644 });
+
+    expect(probeGodotPathForReason(unexecutable, silentLogger)).toContain('permission denied');
+  });
+
+  it('returns null for a binary that answers --version', () => {
+    // /bin/echo exits zero for any argument, which is all the probe requires
+    expect(probeGodotPathForReason('/bin/echo', silentLogger)).toBeNull();
   });
 });
