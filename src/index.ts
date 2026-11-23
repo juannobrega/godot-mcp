@@ -9,7 +9,7 @@
 
 import { fileURLToPath } from 'url';
 import { join, dirname, basename, normalize } from 'path';
-import { existsSync, readdirSync, mkdirSync } from 'fs';
+import { existsSync, readdirSync, readFileSync, realpathSync } from 'fs';
 import { spawn, execFile } from 'child_process';
 import { promisify } from 'util';
 
@@ -24,7 +24,18 @@ import {
 
 // Check if debug mode is enabled
 const DEBUG_MODE: boolean = process.env.DEBUG === 'true';
-const GODOT_DEBUG_MODE: boolean = true; // Always use GODOT DEBUG MODE
+// Verbose logging inside the bundled GDScript. Off unless asked for: the
+// script's debug paths write temp files into the user's project and add
+// artificial delays, so they must not be the default.
+const GODOT_DEBUG_MODE: boolean = process.env.GODOT_DEBUG === 'true' || DEBUG_MODE;
+
+// A hung Godot process would otherwise block the server forever, and the
+// default 1MB maxBuffer truncates verbose operations into a spurious failure.
+const OPERATION_TIMEOUT_MS = 120_000;
+const OPERATION_MAX_BUFFER = 32 * 1024 * 1024;
+
+// Depth limit for directory scans (list_projects, project structure)
+const MAX_SCAN_DEPTH = 8;
 
 const execFileAsync = promisify(execFile);
 
@@ -68,6 +79,7 @@ class GodotServer {
   private operationsScriptPath: string;
   private validatedPaths: Map<string, boolean> = new Map();
   private strictPathValidation: boolean = false;
+  private godotDebugMode: boolean = GODOT_DEBUG_MODE;
 
   /**
    * Parameter name mappings between snake_case and camelCase
@@ -104,14 +116,13 @@ class GodotServer {
     }
     // Apply configuration if provided
     let debugMode = DEBUG_MODE;
-    let godotDebugMode = GODOT_DEBUG_MODE;
 
     if (config) {
       if (config.debugMode !== undefined) {
         debugMode = config.debugMode;
       }
       if (config.godotDebugMode !== undefined) {
-        godotDebugMode = config.godotDebugMode;
+        this.godotDebugMode = config.godotDebugMode;
       }
       if (config.strictPathValidation !== undefined) {
         this.strictPathValidation = config.strictPathValidation;
@@ -139,7 +150,7 @@ class GodotServer {
     this.server = new Server(
       {
         name: 'godot-mcp',
-        version: '0.1.0',
+        version: '1.0.0',
       },
       {
         capabilities: {
@@ -199,6 +210,15 @@ class GodotServer {
     }
 
     return response;
+  }
+
+  /**
+   * Decide whether a finished Godot operation actually failed.
+   * The exit code is authoritative; the stderr sniff is kept because some
+   * GDScript paths report a failure and still exit 0.
+   */
+  private operationFailed(stderr: string, exitCode: number): boolean {
+    return exitCode !== 0 || (!!stderr && stderr.includes('Failed to'));
   }
 
   /**
@@ -485,7 +505,7 @@ class GodotServer {
     operation: string,
     params: OperationParams,
     projectPath: string
-  ): Promise<{ stdout: string; stderr: string }> {
+  ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
     this.logDebug(`Executing operation: ${operation} in project: ${projectPath}`);
     this.logDebug(`Original operation params: ${JSON.stringify(params)}`);
 
@@ -519,22 +539,44 @@ class GodotServer {
       ];
 
       
-      if (GODOT_DEBUG_MODE) {
+      if (this.godotDebugMode) {
         args.push('--debug-godot');
       }
 
       this.logDebug(`Executing: ${this.godotPath} ${args.join(' ')}`);
 
-      const { stdout, stderr } = await execFileAsync(this.godotPath!, args);
+      const { stdout, stderr } = await execFileAsync(this.godotPath!, args, {
+        timeout: OPERATION_TIMEOUT_MS,
+        maxBuffer: OPERATION_MAX_BUFFER,
+      });
 
-      return { stdout: stdout ?? '', stderr: stderr ?? '' };
+      return { stdout: stdout ?? '', stderr: stderr ?? '', exitCode: 0 };
     } catch (error: unknown) {
-      // If execFileAsync throws, it still contains stdout/stderr
-      if (error instanceof Error && 'stdout' in error && 'stderr' in error) {
-        const execError = error as Error & { stdout: string; stderr: string };
+      // execFileAsync rejects on three different things: a non-zero exit, a
+      // timeout, and output past maxBuffer. Only the first carries a usable
+      // exit code; the other two killed the process mid-operation and must
+      // throw, so a caller never reads a truncated run as a finished one.
+      const execError = error as Error & {
+        stdout?: string;
+        stderr?: string;
+        code?: number | string;
+        killed?: boolean;
+        signal?: string;
+      };
+
+      if (execError?.killed || execError?.signal) {
+        throw new Error(
+          `Godot operation '${operation}' was killed before finishing ` +
+          `(exceeded the ${OPERATION_TIMEOUT_MS}ms timeout or the output limit). ` +
+          `Last stderr: ${(execError.stderr ?? '').slice(-500)}`
+        );
+      }
+
+      if (typeof execError?.code === 'number') {
         return {
           stdout: execError.stdout ?? '',
           stderr: execError.stderr ?? '',
+          exitCode: execError.code,
         };
       }
 
@@ -600,8 +642,32 @@ class GodotServer {
    * @param recursive Whether to search recursively
    * @returns Array of Godot projects
    */
-  private findGodotProjects(directory: string, recursive: boolean): Array<{ path: string; name: string }> {
+  private findGodotProjects(
+    directory: string,
+    recursive: boolean,
+    depth: number = 0,
+    visited: Set<string> = new Set()
+  ): Array<{ path: string; name: string }> {
     const projects: Array<{ path: string; name: string }> = [];
+
+    if (depth > MAX_SCAN_DEPTH) {
+      this.logDebug(`Max scan depth reached at ${directory}, not descending`);
+      return projects;
+    }
+
+    // Canonicalize before descending so a symlink cycle cannot loop forever
+    let realDirectory: string;
+    try {
+      realDirectory = realpathSync(directory);
+    } catch (error) {
+      this.logDebug(`Cannot resolve ${directory}: ${error}`);
+      return projects;
+    }
+    if (visited.has(realDirectory)) {
+      this.logDebug(`Already scanned ${realDirectory}, skipping`);
+      return projects;
+    }
+    visited.add(realDirectory);
 
     try {
       // Check if the directory itself is a Godot project
@@ -647,7 +713,7 @@ class GodotServer {
               });
             } else {
               // Recursively search this directory
-              const subProjects = this.findGodotProjects(subdir, true);
+              const subProjects = this.findGodotProjects(subdir, true, depth + 1, visited);
               projects.push(...subProjects);
             }
           }
@@ -1328,7 +1394,26 @@ class GodotServer {
           other: 0,
         };
 
-        const scanDirectory = (currentPath: string) => {
+        const visited = new Set<string>();
+        const scanDirectory = (currentPath: string, depth: number) => {
+          if (depth > MAX_SCAN_DEPTH) {
+            this.logDebug(`Max scan depth reached at ${currentPath}, not descending`);
+            return;
+          }
+
+          // Canonicalize before descending so a symlink cycle cannot loop forever
+          let realPath: string;
+          try {
+            realPath = realpathSync(currentPath);
+          } catch (error) {
+            this.logDebug(`Cannot resolve ${currentPath}: ${error}`);
+            return;
+          }
+          if (visited.has(realPath)) {
+            return;
+          }
+          visited.add(realPath);
+
           const entries = readdirSync(currentPath, { withFileTypes: true });
           
           for (const entry of entries) {
@@ -1341,7 +1426,7 @@ class GodotServer {
             
             if (entry.isDirectory()) {
               // Recursively scan subdirectories
-              scanDirectory(entryPath);
+              scanDirectory(entryPath, depth + 1);
             } else if (entry.isFile()) {
               // Count file by extension
               const ext = entry.name.split('.').pop()?.toLowerCase();
@@ -1360,7 +1445,7 @@ class GodotServer {
         };
         
         // Start scanning from the project root
-        scanDirectory(projectPath);
+        scanDirectory(projectPath, 0);
         resolve(structure);
       } catch (error) {
         this.logDebug(`Error getting project structure asynchronously: ${error}`);
@@ -1435,8 +1520,7 @@ class GodotServer {
       // Extract project name from project.godot file
       let projectName = basename(args.projectPath);
       try {
-        const fs = require('fs');
-        const projectFileContent = fs.readFileSync(projectFile, 'utf8');
+        const projectFileContent = readFileSync(projectFile, 'utf8');
         const configNameMatch = projectFileContent.match(/config\/name="([^"]+)"/);
         if (configNameMatch && configNameMatch[1]) {
           projectName = configNameMatch[1];
@@ -1525,9 +1609,9 @@ class GodotServer {
       };
 
       // Execute the operation
-      const { stdout, stderr } = await this.executeOperation('create_scene', params, args.projectPath);
+      const { stdout, stderr, exitCode } = await this.executeOperation('create_scene', params, args.projectPath);
 
-      if (stderr && stderr.includes('Failed to')) {
+      if (this.operationFailed(stderr, exitCode)) {
         return this.createErrorResponse(
           `Failed to create scene: ${stderr}`,
           [
@@ -1628,9 +1712,9 @@ class GodotServer {
       }
 
       // Execute the operation
-      const { stdout, stderr } = await this.executeOperation('add_node', params, args.projectPath);
+      const { stdout, stderr, exitCode } = await this.executeOperation('add_node', params, args.projectPath);
 
-      if (stderr && stderr.includes('Failed to')) {
+      if (this.operationFailed(stderr, exitCode)) {
         return this.createErrorResponse(
           `Failed to add node: ${stderr}`,
           [
@@ -1732,9 +1816,9 @@ class GodotServer {
       };
 
       // Execute the operation
-      const { stdout, stderr } = await this.executeOperation('load_sprite', params, args.projectPath);
+      const { stdout, stderr, exitCode } = await this.executeOperation('load_sprite', params, args.projectPath);
 
-      if (stderr && stderr.includes('Failed to')) {
+      if (this.operationFailed(stderr, exitCode)) {
         return this.createErrorResponse(
           `Failed to load sprite: ${stderr}`,
           [
@@ -1827,9 +1911,9 @@ class GodotServer {
       }
 
       // Execute the operation
-      const { stdout, stderr } = await this.executeOperation('export_mesh_library', params, args.projectPath);
+      const { stdout, stderr, exitCode } = await this.executeOperation('export_mesh_library', params, args.projectPath);
 
-      if (stderr && stderr.includes('Failed to')) {
+      if (this.operationFailed(stderr, exitCode)) {
         return this.createErrorResponse(
           `Failed to export mesh library: ${stderr}`,
           [
@@ -1925,9 +2009,9 @@ class GodotServer {
       }
 
       // Execute the operation
-      const { stdout, stderr } = await this.executeOperation('save_scene', params, args.projectPath);
+      const { stdout, stderr, exitCode } = await this.executeOperation('save_scene', params, args.projectPath);
 
-      if (stderr && stderr.includes('Failed to')) {
+      if (this.operationFailed(stderr, exitCode)) {
         return this.createErrorResponse(
           `Failed to save scene: ${stderr}`,
           [
@@ -2036,9 +2120,9 @@ class GodotServer {
       };
 
       // Execute the operation
-      const { stdout, stderr } = await this.executeOperation('get_uid', params, args.projectPath);
+      const { stdout, stderr, exitCode } = await this.executeOperation('get_uid', params, args.projectPath);
 
-      if (stderr && stderr.includes('Failed to')) {
+      if (this.operationFailed(stderr, exitCode)) {
         return this.createErrorResponse(
           `Failed to get UID: ${stderr}`,
           [
@@ -2130,15 +2214,12 @@ class GodotServer {
         );
       }
 
-      // Prepare parameters for the operation (already in camelCase)
-      const params = {
-        projectPath: args.projectPath,
-      };
+      // Deliberately no projectPath: the operations script resolves against
+      // res://, which --path already points at the project. A host path sent
+      // here got prefixed with res:// and matched nothing at all.
+      const { stdout, stderr, exitCode } = await this.executeOperation('resave_resources', {}, args.projectPath);
 
-      // Execute the operation
-      const { stdout, stderr } = await this.executeOperation('resave_resources', params, args.projectPath);
-
-      if (stderr && stderr.includes('Failed to')) {
+      if (this.operationFailed(stderr, exitCode)) {
         return this.createErrorResponse(
           `Failed to update project UIDs: ${stderr}`,
           [

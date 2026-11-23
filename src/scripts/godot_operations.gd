@@ -4,6 +4,11 @@ extends SceneTree
 # Debug mode flag
 var debug_mode = false
 
+# Exit status for the whole run. Operations set this instead of calling quit(1):
+# quit() only schedules the SceneTree exit, so a bare quit(1) neither stopped
+# the function nor survived the quit() at the end of _init().
+var exit_code = 0
+
 func _init():
     var args = OS.get_cmdline_args()
     
@@ -15,6 +20,7 @@ func _init():
     if script_index == -1:
         log_error("Could not find --script argument")
         quit(1)
+        return
     
     # The operation should be 2 positions after the script path (script_index + 1 is the script path itself)
     var operation_index = script_index + 2
@@ -25,6 +31,7 @@ func _init():
         log_error("Usage: godot --headless --script godot_operations.gd <operation> <json_params>")
         log_error("Not enough command-line arguments provided.")
         quit(1)
+        return
     
     # Log all arguments for debugging
     log_debug("All arguments: " + str(args))
@@ -41,18 +48,19 @@ func _init():
     # Parse JSON using Godot 4.x API
     var json = JSON.new()
     var error = json.parse(params_json)
-    var params = null
-    
-    if error == OK:
-        params = json.get_data()
-    else:
+    if error != OK:
         log_error("Failed to parse JSON parameters: " + params_json)
         log_error("JSON Error: " + json.get_error_message() + " at line " + str(json.get_error_line()))
         quit(1)
+        return
     
-    if not params:
-        log_error("Failed to parse JSON parameters: " + params_json)
+    var params = json.get_data()
+    # Checked by type, not truthiness: an empty Dictionary is falsy in GDScript,
+    # which made operations that take no parameters look like a parse error.
+    if typeof(params) != TYPE_DICTIONARY:
+        log_error("Expected a JSON object for parameters, got: " + params_json)
         quit(1)
+        return
     
     log_info("Executing operation: " + operation)
     
@@ -74,8 +82,9 @@ func _init():
         _:
             log_error("Unknown operation: " + operation)
             quit(1)
+            return
     
-    quit()
+    quit(exit_code)
 
 # Logging functions
 func log_debug(message):
@@ -240,7 +249,8 @@ func create_scene(params):
         printerr("Failed to instantiate node of type: " + root_node_type)
         printerr("Make sure the class exists and can be instantiated")
         printerr("Check if the class is registered in ClassDB or available as a script")
-        quit(1)
+        exit_code = 1
+        return
     
     scene_root.name = "root"
     if debug_mode:
@@ -315,7 +325,8 @@ func create_scene(params):
                     if make_dir_error != OK:
                         printerr("Failed to create directory using absolute path")
                         printerr("Error code: " + str(make_dir_error))
-                        quit(1)
+                        exit_code = 1
+                        return
                 else:
                     # Create the directory using the DirAccess instance
                     if debug_mode:
@@ -327,7 +338,8 @@ func create_scene(params):
                     if make_dir_error != OK:
                         printerr("Failed to create directory: " + scene_dir_relative)
                         printerr("Error code: " + str(make_dir_error))
-                        quit(1)
+                        exit_code = 1
+                        return
                 
                 # Verify the directory was created
                 dir_exists = DirAccess.dir_exists_absolute(scene_dir_abs)
@@ -337,7 +349,8 @@ func create_scene(params):
                 if not dir_exists:
                     printerr("Directory reported as created but does not exist: " + scene_dir_abs)
                     printerr("This may indicate a problem with path resolution or permissions")
-                    quit(1)
+                    exit_code = 1
+                    return
             elif debug_mode:
                 print("Directory already exists: " + scene_dir_abs)
         
@@ -405,7 +418,8 @@ func create_scene(params):
                     
                     # Return error since we couldn't create the scene file
                     printerr("Failed to create scene: " + params.scene_path)
-                    quit(1)
+                    exit_code = 1
+                    return
                 
                 # If we get here, at least one of our file checks passed
                 if file_check_abs or file_check_res or res_exists:
@@ -424,7 +438,8 @@ func create_scene(params):
                 else:
                     printerr("All file existence checks failed despite successful save operation.")
                     printerr("This indicates a serious issue with file system access or path resolution.")
-                    quit(1)
+                    exit_code = 1
+                    return
             else:
                 # In non-debug mode, just check if the file exists
                 var file_exists = FileAccess.file_exists(full_scene_path)
@@ -432,7 +447,8 @@ func create_scene(params):
                     print("Scene created successfully at: " + params.scene_path)
                 else:
                     printerr("Failed to create scene: " + params.scene_path)
-                    quit(1)
+                    exit_code = 1
+                    return
         else:
             # Handle specific error codes
             var error_message = "Failed to save scene. Error code: " + str(save_error)
@@ -447,11 +463,13 @@ func create_scene(params):
                 error_message += " (ERR_FILE_NO_PERMISSION - No permission to write the scene file)"
             
             printerr(error_message)
-            quit(1)
+            exit_code = 1
+            return
     else:
         printerr("Failed to pack scene: " + str(result))
         printerr("Error code: " + str(result))
-        quit(1)
+        exit_code = 1
+        return
 
 # Add a node to an existing scene
 func add_node(params):
@@ -469,12 +487,14 @@ func add_node(params):
     
     if not FileAccess.file_exists(absolute_scene_path):
         printerr("Scene file does not exist at: " + absolute_scene_path)
-        quit(1)
+        exit_code = 1
+        return
     
     var scene = load(full_scene_path)
     if not scene:
         printerr("Failed to load scene: " + full_scene_path)
-        quit(1)
+        exit_code = 1
+        return
     
     if debug_mode:
         print("Scene loaded successfully")
@@ -494,7 +514,8 @@ func add_node(params):
         parent = scene_root.get_node(parent_path.replace("root/", ""))
         if not parent:
             printerr("Parent node not found: " + parent_path)
-            quit(1)
+            exit_code = 1
+            return
     if debug_mode:
         print("Parent node found: " + parent.name)
     
@@ -505,7 +526,8 @@ func add_node(params):
         printerr("Failed to instantiate node of type: " + params.node_type)
         printerr("Make sure the class exists and can be instantiated")
         printerr("Check if the class is registered in ClassDB or available as a script")
-        quit(1)
+        exit_code = 1
+        return
     new_node.name = params.node_name
     if debug_mode:
         print("New node created with name: " + new_node.name)
@@ -577,7 +599,8 @@ func load_sprite(params):
         # Get the absolute path for reference
         var absolute_path = ProjectSettings.globalize_path(full_scene_path)
         printerr("Absolute file path that doesn't exist: " + absolute_path)
-        quit(1)
+        exit_code = 1
+        return
     
     # Ensure the texture path starts with res:// for Godot's resource system
     var full_texture_path = params.texture_path
@@ -591,7 +614,8 @@ func load_sprite(params):
     var scene = load(full_scene_path)
     if not scene:
         printerr("Failed to load scene: " + full_scene_path)
-        quit(1)
+        exit_code = 1
+        return
     
     if debug_mode:
         print("Scene loaded successfully")
@@ -624,14 +648,16 @@ func load_sprite(params):
     
     if not sprite_node:
         printerr("Node not found: " + params.node_path)
-        quit(1)
+        exit_code = 1
+        return
     
     # Check if the node is a Sprite2D or compatible type
     if debug_mode:
         print("Node class: " + sprite_node.get_class())
     if not (sprite_node is Sprite2D or sprite_node is Sprite3D or sprite_node is TextureRect):
         printerr("Node is not a sprite-compatible type: " + sprite_node.get_class())
-        quit(1)
+        exit_code = 1
+        return
     
     # Load the texture
     if debug_mode:
@@ -639,7 +665,8 @@ func load_sprite(params):
     var texture = load(full_texture_path)
     if not texture:
         printerr("Failed to load texture: " + full_texture_path)
-        quit(1)
+        exit_code = 1
+        return
     
     if debug_mode:
         print("Texture loaded successfully")
@@ -717,7 +744,8 @@ func export_mesh_library(params):
         # Get the absolute path for reference
         var absolute_path = ProjectSettings.globalize_path(full_scene_path)
         printerr("Absolute file path that doesn't exist: " + absolute_path)
-        quit(1)
+        exit_code = 1
+        return
     
     # Load the scene
     if debug_mode:
@@ -725,7 +753,8 @@ func export_mesh_library(params):
     var scene = load(full_scene_path)
     if not scene:
         printerr("Failed to load scene: " + full_scene_path)
-        quit(1)
+        exit_code = 1
+        return
     
     if debug_mode:
         print("Scene loaded successfully")
@@ -824,7 +853,8 @@ func export_mesh_library(params):
     if dir == null:
         printerr("Failed to open res:// directory")
         printerr("DirAccess error: " + str(DirAccess.get_open_error()))
-        quit(1)
+        exit_code = 1
+        return
         
     var output_dir = full_output_path.get_base_dir()
     if debug_mode:
@@ -836,7 +866,8 @@ func export_mesh_library(params):
         var error = dir.make_dir_recursive(output_dir.substr(6))  # Remove "res://" prefix
         if error != OK:
             printerr("Failed to create directory: " + output_dir + ", error: " + str(error))
-            quit(1)
+            exit_code = 1
+            return
     
     # Save the mesh library
     if item_id > 0:
@@ -889,7 +920,8 @@ func find_files(path, extension):
 func get_uid(params):
     if not params.has("file_path"):
         printerr("File path is required")
-        quit(1)
+        exit_code = 1
+        return
     
     # Ensure the file path starts with res:// for Godot's resource system
     var file_path = params.file_path
@@ -913,7 +945,8 @@ func get_uid(params):
     if not file_check:
         printerr("File does not exist at: " + file_path)
         printerr("Absolute file path that doesn't exist: " + absolute_path)
-        quit(1)
+        exit_code = 1
+        return
     
     # Check if the UID file exists
     var uid_path = file_path + ".uid"
@@ -965,9 +998,17 @@ func resave_resources(params):
     # Get project path if provided
     var project_path = "res://"
     if params.has("project_path"):
-        project_path = params.project_path
-        if not project_path.begins_with("res://"):
-            project_path = "res://" + project_path
+        var requested = str(params.project_path)
+        # Only project-relative paths mean anything here. --path already points
+        # Godot at the project, so blindly prefixing a host path with res://
+        # produced something like res:///Users/x/proj that matched zero files
+        # while still reporting success.
+        if requested.begins_with("res://"):
+            project_path = requested
+        elif requested.is_absolute_path():
+            log_error("Ignoring absolute project_path '" + requested + "'; scanning res:// instead")
+        else:
+            project_path = "res://" + requested
         if not project_path.ends_with("/"):
             project_path += "/"
     
@@ -1108,13 +1149,15 @@ func save_scene(params):
         # Get the absolute path for reference
         var absolute_path = ProjectSettings.globalize_path(full_scene_path)
         printerr("Absolute file path that doesn't exist: " + absolute_path)
-        quit(1)
+        exit_code = 1
+        return
     
     # Load the scene
     var scene = load(full_scene_path)
     if not scene:
         printerr("Failed to load scene: " + full_scene_path)
-        quit(1)
+        exit_code = 1
+        return
     
     if debug_mode:
         print("Scene loaded successfully")
@@ -1138,7 +1181,8 @@ func save_scene(params):
         if dir == null:
             printerr("Failed to open res:// directory")
             printerr("DirAccess error: " + str(DirAccess.get_open_error()))
-            quit(1)
+            exit_code = 1
+            return
             
         var scene_dir = save_path.get_base_dir()
         if debug_mode:
@@ -1150,7 +1194,8 @@ func save_scene(params):
             var error = dir.make_dir_recursive(scene_dir.substr(6))  # Remove "res://" prefix
             if error != OK:
                 printerr("Failed to create directory: " + scene_dir + ", error: " + str(error))
-                quit(1)
+                exit_code = 1
+                return
     
     # Create a packed scene
     var packed_scene = PackedScene.new()
