@@ -15,7 +15,7 @@ import { registerRunTools } from './tools/run.js';
 import { registerSceneTools } from './tools/scene.js';
 
 const SERVER_NAME = 'godot-mcp';
-const SERVER_VERSION = '1.1.1';
+const SERVER_VERSION = '1.1.2';
 
 const moduleDir = dirname(fileURLToPath(import.meta.url));
 
