@@ -33,6 +33,16 @@ async function main(): Promise<void> {
     logger.warn('Starting anyway; Godot-backed tools will fail until GODOT_PATH is correct');
   }
 
+  // Said once here, not in buildServer: over HTTP that runs per session, and
+  // the notice would repeat for every client that connects.
+  if (!config.processTools) {
+    logger.info(
+      'Not exposing launch_editor, run_project, get_debug_output or stop_project: ' +
+      'they drive a Godot process with a window and need a display. ' +
+      'Set GODOT_MCP_PROCESS_TOOLS=true to force them on.',
+    );
+  }
+
   const shutdown = async (signal: string) => {
     logger.info(`Received ${signal}, shutting down`);
     await built.dispose().catch(() => {});

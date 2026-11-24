@@ -54,8 +54,16 @@ describe('streamable http transport', () => {
     await client.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`)));
 
     const { tools } = await client.listTools();
-    expect(tools.length).toBe(14);
-    expect(tools.map((t) => t.name)).toContain('create_scene');
+    const names = tools.map((t) => t.name);
+
+    expect(names).toContain('create_scene');
+
+    // Over HTTP the display-dependent tools are deliberately not registered,
+    // so a client never sees a tool it cannot possibly use here.
+    for (const gated of ['launch_editor', 'run_project', 'get_debug_output', 'stop_project']) {
+      expect(names, `${gated} should not be exposed over http`).not.toContain(gated);
+    }
+    expect(tools.length).toBe(10);
 
     await client.close();
   });
@@ -184,5 +192,99 @@ describe('session isolation', () => {
     });
 
     expect(response.status).toBe(404);
+  });
+});
+
+describe('documentation route', () => {
+  const PORT = '34519';
+  const DOMAIN = 'godot-mcp.software.nuvello.com.br';
+  let built: BuiltServer;
+  let handle: HttpHandle;
+
+  beforeAll(async () => {
+    const config = loadConfig({
+      MCP_TRANSPORT: 'http',
+      MCP_HTTP_HOST: '127.0.0.1',
+      MCP_HTTP_PORT: PORT,
+      GODOT_MCP_WORKSPACE: process.cwd(),
+      MCP_ALLOWED_HOSTS: `127.0.0.1:${PORT},${DOMAIN}`,
+    });
+    built = buildServer(config, silentLogger);
+    handle = await serveHttp(built, config);
+  });
+
+  afterAll(async () => {
+    await handle?.close();
+    await built?.dispose();
+  });
+
+  const base = `http://127.0.0.1:${PORT}`;
+
+  it('serves HTML at the root instead of a 404', async () => {
+    const response = await fetch(`${base}/`);
+
+    expect(response.ok).toBe(true);
+    expect(response.headers.get('content-type')).toContain('text/html');
+    expect(await response.text()).toContain('Godot MCP server');
+  });
+
+  it('documents every route the server answers', async () => {
+    const html = await fetch(`${base}/`).then((r) => r.text());
+
+    for (const path of ['/healthz', '/mcp']) {
+      expect(html, `missing ${path}`).toContain(path);
+    }
+    expect(html).toContain('Mcp-Session-Id');
+  });
+
+  // The page is rendered from a real tools/list, so it cannot drift from the
+  // tools the server actually exposes.
+  it('lists exactly the tools this configuration exposes', async () => {
+    const html = await fetch(`${base}/`).then((r) => r.text());
+
+    for (const tool of ['create_scene', 'add_node', 'load_sprite', 'export_mesh_library', 'get_uid']) {
+      expect(html, `missing ${tool}`).toContain(tool);
+    }
+  });
+
+  // Over HTTP the display-dependent tools are gated off, and the page has to
+  // say so rather than leaving a reader wondering where they went.
+  it('explains why the process tools are absent over http', async () => {
+    const html = await fetch(`${base}/`).then((r) => r.text());
+
+    expect(html).toContain('Not available over HTTP');
+    expect(html).toContain('GODOT_MCP_PROCESS_TOOLS');
+  });
+
+  it('shows a parameter table with required parameters marked', async () => {
+    const html = await fetch(`${base}/`).then((r) => r.text());
+
+    expect(html).toContain('projectPath');
+    expect(html).toContain('class="req"');
+  });
+
+  // Behind a proxy, the examples must name the public domain, not the bind address
+  it('uses the forwarded host and scheme in the connection examples', async () => {
+    const html = await fetch(`${base}/`, {
+      headers: { 'x-forwarded-host': DOMAIN, 'x-forwarded-proto': 'https' },
+    }).then((r) => r.text());
+
+    expect(html).toContain(`https://${DOMAIN}/mcp`);
+  });
+
+  // An attacker-supplied Host must not end up echoed into the page
+  it('ignores a host that is not in the allowlist', async () => {
+    const html = await fetch(`${base}/`, {
+      headers: { 'x-forwarded-host': 'evil.example.com' },
+    }).then((r) => r.text());
+
+    expect(html).not.toContain('evil.example.com');
+  });
+
+  it('answers HEAD without a body', async () => {
+    const response = await fetch(`${base}/`, { method: 'HEAD' });
+
+    expect(response.ok).toBe(true);
+    expect(await response.text()).toBe('');
   });
 });

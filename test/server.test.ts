@@ -133,3 +133,14 @@ describe('packaging', () => {
     expect(offenders).toEqual([]);
   });
 });
+
+describe('version', () => {
+  // The page and the MCP handshake both advertise SERVER_VERSION, so a bump
+  // that only touches package.json would ship a lie.
+  it('matches package.json', async () => {
+    const { SERVER_VERSION } = await import('../src/version.js');
+    const pkg = JSON.parse(readFileSync('package.json', 'utf8')) as { version: string };
+
+    expect(SERVER_VERSION).toBe(pkg.version);
+  });
+});

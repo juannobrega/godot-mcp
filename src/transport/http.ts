@@ -7,6 +7,9 @@ import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import type { ServerConfig } from '../config.js';
 import { buildServer, type BuiltServer } from '../server.js';
 import type { Logger } from '../lib/log.js';
+import { introspectTools, type ToolInfo } from '../docs/introspect.js';
+import { renderDocsPage } from '../docs/page.js';
+import { SERVER_VERSION } from '../version.js';
 import { installArgumentAliases } from './aliases.js';
 
 /** Refuse bodies large enough to be a denial of service rather than a request. */
@@ -46,10 +49,14 @@ export async function serveHttp(
   const logger = built.logger;
   const sessions = new Map<string, Session>();
 
+  // Resolved once at startup: the tool list cannot change while the process
+  // runs, and asking per request would build a server per page view.
+  const tools = await introspectTools(config, logger);
+
   // The server instance passed in owns no session; it is used for the startup
   // Godot probe and is disposed by the caller.
   const http = createServer((req, res) => {
-    void route(req, res, { config, logger, endpoint, sessions }).catch((error) => {
+    void route(req, res, { config, logger, endpoint, sessions, tools }).catch((error) => {
       logger.error(`Unhandled HTTP failure: ${describe(error)}`);
       if (!res.headersSent) respondJson(res, 500, { error: 'Internal error' });
     });
@@ -88,10 +95,26 @@ interface RouteDeps {
   logger: Logger;
   endpoint: string;
   sessions: Map<string, Session>;
+  tools: ToolInfo[];
 }
 
 async function route(req: IncomingMessage, res: ServerResponse, deps: RouteDeps): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://localhost');
+
+  // Documentation, so that opening the deployment in a browser explains what
+  // it is and how to connect instead of returning a bare 404.
+  if (url.pathname === '/' && (req.method === 'GET' || req.method === 'HEAD')) {
+    respondHtml(res, renderDocsPage({
+      config: deps.config,
+      tools: deps.tools,
+      version: SERVER_VERSION,
+      // Taken from the request so the examples name the public domain rather
+      // than the container's bind address.
+      host: publicHost(req, deps.config),
+      secure: isSecure(req),
+    }), req.method === 'HEAD');
+    return;
+  }
 
   // Liveness probe for the container runtime and the reverse proxy. Outside
   // the MCP endpoint so it needs no session and no MCP headers.
@@ -219,6 +242,35 @@ async function readBody(req: IncomingMessage): Promise<unknown> {
 function headerValue(req: IncomingMessage, name: string): string | undefined {
   const raw = req.headers[name];
   return Array.isArray(raw) ? raw[0] : raw;
+}
+
+/**
+ * The host to show in the connection examples.
+ *
+ * Behind a reverse proxy the Host header is the public domain, which is what a
+ * reader needs. It is already constrained to the configured allowlist by the
+ * transport's rebinding protection, so it is safe to echo.
+ */
+function publicHost(req: IncomingMessage, config: ServerConfig): string {
+  const forwarded = headerValue(req, 'x-forwarded-host');
+  const host = forwarded ?? headerValue(req, 'host');
+  if (host && config.http.allowedHosts.includes(host)) return host;
+
+  return config.http.allowedHosts[0] ?? `localhost:${config.http.port}`;
+}
+
+/** TLS is terminated at the proxy, so the scheme arrives in a header. */
+function isSecure(req: IncomingMessage): boolean {
+  return headerValue(req, 'x-forwarded-proto') === 'https';
+}
+
+function respondHtml(res: ServerResponse, html: string, headOnly = false): void {
+  res.writeHead(200, {
+    'content-type': 'text/html; charset=utf-8',
+    'content-length': Buffer.byteLength(html),
+    'cache-control': 'no-cache',
+  });
+  res.end(headOnly ? undefined : html);
 }
 
 function respondJson(res: ServerResponse, status: number, payload: unknown): void {

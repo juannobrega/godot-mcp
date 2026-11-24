@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 import type { ServerConfig } from './config.js';
+import { SERVER_VERSION } from './version.js';
 import { createLogger, type Logger } from './lib/log.js';
 import { GodotBinary } from './godot/binary.js';
 import { ProjectRunner } from './godot/process.js';
@@ -15,7 +16,6 @@ import { registerRunTools } from './tools/run.js';
 import { registerSceneTools } from './tools/scene.js';
 
 const SERVER_NAME = 'godot-mcp';
-const SERVER_VERSION = '1.1.4';
 
 const moduleDir = dirname(fileURLToPath(import.meta.url));
 
@@ -43,8 +43,13 @@ export function buildServer(config: ServerConfig, logger: Logger = createLogger(
     { capabilities: { tools: {} } },
   );
 
-  registerEditorTools(server, context);
-  registerRunTools(server, context);
+  // Gated: these drive a Godot process that needs a display. See
+  // ServerConfig.processTools for why the default follows the transport.
+  if (config.processTools) {
+    registerEditorTools(server, context);
+    registerRunTools(server, context);
+  }
+
   registerProjectTools(server, context);
   registerSceneTools(server, context);
   registerResourceTools(server, context);

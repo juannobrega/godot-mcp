@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, symlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -231,6 +231,96 @@ describeE2E('end to end against a real Godot', () => {
 
     expect(result.isError).toBe(true);
     expect(existsSync(join(project, 'meshes', 'empty.res'))).toBe(false);
+  });
+
+  // The success path: a 3D scene whose children carry real meshes. Previously
+  // only the empty case was covered, which is how the silent-success bug in
+  // export_mesh_library survived.
+  describe('export_mesh_library with real meshes', () => {
+    // A real BoxMesh resource, so the exported library has actual geometry
+    const boxResource = join(import.meta.dirname, 'fixtures', 'box.tres');
+
+    beforeAll(async () => {
+      mkdirSync(join(project, 'meshes'), { recursive: true });
+      copyFileSync(boxResource, join(project, 'meshes', 'box.tres'));
+
+      await client.callTool({
+        name: 'create_scene',
+        arguments: { projectPath: project, scenePath: 'scenes/World.tscn', rootNodeType: 'Node3D' },
+      });
+
+      for (const name of ['Cube', 'Pillar']) {
+        await client.callTool({
+          name: 'add_node',
+          arguments: {
+            projectPath: project,
+            scenePath: 'scenes/World.tscn',
+            nodeType: 'MeshInstance3D',
+            nodeName: name,
+            properties: { mesh: 'res://meshes/box.tres' },
+          },
+        });
+      }
+    });
+
+    it('exports every mesh in the scene', async () => {
+      const result = await client.callTool({
+        name: 'export_mesh_library',
+        arguments: {
+          projectPath: project,
+          scenePath: 'scenes/World.tscn',
+          outputPath: 'meshes/world.res',
+        },
+      });
+
+      expect(result.isError, text(result)).toBeFalsy();
+      expect(existsSync(join(project, 'meshes', 'world.res'))).toBe(true);
+      expect(statSync(join(project, 'meshes', 'world.res')).size).toBeGreaterThan(0);
+    });
+
+    it('exports only the named meshes when filtered', async () => {
+      const result = await client.callTool({
+        name: 'export_mesh_library',
+        arguments: {
+          projectPath: project,
+          scenePath: 'scenes/World.tscn',
+          outputPath: 'meshes/just-cube.res',
+          meshItemNames: ['Cube'],
+        },
+      });
+
+      expect(result.isError, text(result)).toBeFalsy();
+      expect(existsSync(join(project, 'meshes', 'just-cube.res'))).toBe(true);
+    });
+
+    it('creates the output directory when it does not exist', async () => {
+      const result = await client.callTool({
+        name: 'export_mesh_library',
+        arguments: {
+          projectPath: project,
+          scenePath: 'scenes/World.tscn',
+          outputPath: 'generated/nested/lib.res',
+        },
+      });
+
+      expect(result.isError, text(result)).toBeFalsy();
+      expect(existsSync(join(project, 'generated', 'nested', 'lib.res'))).toBe(true);
+    });
+
+    it('reports a filter that matches nothing as an error', async () => {
+      const result = await client.callTool({
+        name: 'export_mesh_library',
+        arguments: {
+          projectPath: project,
+          scenePath: 'scenes/World.tscn',
+          outputPath: 'meshes/nothing.res',
+          meshItemNames: ['NoSuchNode'],
+        },
+      });
+
+      expect(result.isError).toBe(true);
+      expect(existsSync(join(project, 'meshes', 'nothing.res'))).toBe(false);
+    });
   });
 
   it('refuses a scene path that escapes the project', async () => {

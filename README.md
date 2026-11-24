@@ -78,6 +78,13 @@ project instead of guessing.
 | `get_uid` | Get a file's Godot UID (4.4+) |
 | `update_project_uids` | Re-save resources to refresh UID references (4.4+) |
 
+The first four drive a Godot process with a window and need a display on the
+machine running the engine, so they are exposed over **stdio only**. Over HTTP
+the server is typically a headless container elsewhere, where `godot -e` and
+`godot -d` cannot open a window at all — listing them there would mean a client
+calling a tool that can never work. Set `GODOT_MCP_PROCESS_TOOLS=true` to force
+them on, e.g. after adding a virtual display to the image.
+
 Arguments are camelCase (`projectPath`), and `snake_case` (`project_path`) is
 accepted as an alias.
 
@@ -199,9 +206,30 @@ Pass `projectPath` relative to the workspace (`my-game`, not
 `/home/you/my-game`). A path that resolves outside it is refused, symlinks
 included.
 
-Each client session gets its own server instance, so one client's
-`stop_project` cannot kill another client's run. `GET /healthz` is the
-liveness probe used by the container healthcheck and the proxy.
+Each client session gets its own server instance, so one client cannot disturb
+another's state.
+
+### Routes
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/` | Documentation page: routes, connection snippets and every tool with its parameters |
+| `GET` | `/healthz` | Liveness probe. Returns `{status:ok,sessions:n}` |
+| `POST` | `/mcp` | MCP Streamable HTTP. An `initialize` request opens a session |
+| `GET` | `/mcp` | Server-sent event stream for an open session |
+| `DELETE` | `/mcp` | Close a session |
+
+Requests after `initialize` carry the `Mcp-Session-Id` header it returned.
+
+Opening the deployment in a browser serves the documentation page, which is
+rendered from a real `tools/list` against this configuration — so it shows
+exactly what a connecting client sees and cannot drift from the code.
+
+Connect a client with:
+
+```bash
+claude mcp add --transport http godot https://godot-mcp.software.nuvello.com.br/mcp
+```
 
 ### Getting projects into the workspace
 
@@ -252,6 +280,7 @@ can drop projects straight in.
 | `GODOT_MCP_MAX_BUFFER` | `33554432` | Max bytes captured from one operation |
 | `GODOT_MCP_MAX_SCAN_DEPTH` | `8` | Directory recursion limit |
 | `GODOT_MCP_MAX_OUTPUT_LINES` | `5000` | Retained output lines per run |
+| `GODOT_MCP_PROCESS_TOOLS` | on for stdio, off for HTTP | Expose the four display-dependent tools |
 
 ## How it works
 
@@ -264,6 +293,7 @@ src/
   godot/            engine location, operation execution, running projects, scanning
   tools/            one module per tool group, each with its Zod schema
   transport/        stdio and Streamable HTTP, plus the snake_case alias shim
+  docs/             the page served at /, rendered from a real tools/list
   scripts/
     godot_operations.gd   the bundled GDScript all scene edits go through
 ```

@@ -44,6 +44,16 @@ export interface ServerConfig {
   maxScanDepth: number;
   /** Cap on retained stdout/stderr lines per run, so a chatty project cannot grow without bound. */
   maxOutputLines: number;
+  /**
+   * Whether to expose the tools that drive a Godot process with a window:
+   * launch_editor, run_project, get_debug_output and stop_project.
+   *
+   * These need a display and a session on the machine the client is running
+   * on. Over HTTP the server is typically a headless container somewhere else,
+   * where `godot -e` and `godot -d` cannot open a window at all — so they are
+   * off by default there rather than listed and failing obscurely.
+   */
+  processTools: boolean;
 }
 
 const DEFAULTS = {
@@ -95,6 +105,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     operationMaxBuffer: integer(env.GODOT_MCP_MAX_BUFFER, DEFAULTS.operationMaxBuffer),
     maxScanDepth: integer(env.GODOT_MCP_MAX_SCAN_DEPTH, DEFAULTS.maxScanDepth),
     maxOutputLines: integer(env.GODOT_MCP_MAX_OUTPUT_LINES, DEFAULTS.maxOutputLines),
+    // Default follows the transport, since that is what decides whether a
+    // display is plausibly available. Set the variable to override either way,
+    // e.g. after adding Xvfb to the image.
+    processTools: env.GODOT_MCP_PROCESS_TOOLS
+      ? flag(env.GODOT_MCP_PROCESS_TOOLS)
+      : transport === 'stdio',
   };
 
   validate(config);
