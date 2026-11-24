@@ -134,11 +134,24 @@ export function renderDocsPage(options: PageOptions): string {
   }
 }</code></pre>
 
-  <h2>Project paths</h2>
+  <h2>Which filesystem the paths refer to</h2>
+  <div class="note">
+    <p>
+      <strong>This server's own disk, not yours.</strong>
+      Every tool that takes a path acts on the projects stored in this server's
+      workspace. There is no file transport: a project on your laptop is not visible
+      here, and these tools cannot read or modify it.
+    </p>
+    <p>
+      So this endpoint is for projects that live on this host. To work on a project on
+      your own machine, run the server locally over stdio instead &mdash; the tools then
+      act on your filesystem, and the display-dependent tools work too.
+    </p>
+  </div>
   <p>
-    Every path is resolved inside the server's workspace and a path that escapes it is
-    refused, symlinks included. Pass <code>projectPath</code> relative to that root
-    &mdash; <code>my-game</code>, not an absolute path from your own machine.
+    Paths are resolved inside the workspace root and one that escapes it is refused,
+    symlinks included. Pass <code>projectPath</code> relative to that root &mdash;
+    <code>my-game</code>, not an absolute path.
   </p>
   ${renderProcessToolNote(config)}
 

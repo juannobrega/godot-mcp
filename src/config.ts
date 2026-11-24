@@ -1,5 +1,7 @@
 import { resolve } from 'node:path';
 
+import { displayHost, expandAllowedHosts, expandAllowedOrigins } from './lib/hosts.js';
+
 export type TransportKind = 'stdio' | 'http';
 
 export interface HttpConfig {
@@ -14,6 +16,12 @@ export interface HttpConfig {
    */
   allowedHosts: string[];
   allowedOrigins: string[];
+  /**
+   * The hostname to print in documentation, without a port that cannot be the
+   * public one. A reverse proxy forwards whichever port form it likes, and the
+   * container's own port is not reachable from outside.
+   */
+  canonicalHost: string;
 }
 
 export interface ServerConfig {
@@ -87,6 +95,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     ? resolve(env.GODOT_MCP_WORKSPACE)
     : undefined;
 
+  const httpPort = integer(env.MCP_HTTP_PORT, DEFAULTS.httpPort);
+  const configuredHosts = list(env.MCP_ALLOWED_HOSTS);
+
   const config: ServerConfig = {
     godotPath: env.GODOT_PATH,
     debug: flag(env.DEBUG),
@@ -96,10 +107,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     transport,
     http: {
       host: env.MCP_HTTP_HOST ?? DEFAULTS.httpHost,
-      port: integer(env.MCP_HTTP_PORT, DEFAULTS.httpPort),
+      port: httpPort,
       endpoint: env.MCP_HTTP_ENDPOINT ?? DEFAULTS.httpEndpoint,
-      allowedHosts: list(env.MCP_ALLOWED_HOSTS),
-      allowedOrigins: list(env.MCP_ALLOWED_ORIGINS),
+      // Expanded so every port form of a configured hostname is accepted. A
+      // literal allowlist matched only one form, which meant an allowlist of
+      // "host:8086" rejected the "host" that the proxy actually forwards —
+      // every external client got a 403.
+      allowedHosts: expandAllowedHosts(configuredHosts, httpPort),
+      // Expanded for the same reason as the hosts: a browser omits an
+      // implicit port from Origin, so a port-suffixed entry would match nothing.
+      allowedOrigins: expandAllowedOrigins(list(env.MCP_ALLOWED_ORIGINS), httpPort),
+      canonicalHost: configuredHosts[0]
+        ? displayHost(configuredHosts[0], httpPort)
+        : `localhost:${httpPort}`,
     },
     operationTimeoutMs: integer(env.GODOT_MCP_TIMEOUT_MS, DEFAULTS.operationTimeoutMs),
     operationMaxBuffer: integer(env.GODOT_MCP_MAX_BUFFER, DEFAULTS.operationMaxBuffer),
@@ -113,7 +133,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       : transport === 'stdio',
   };
 
-  validate(config);
+  validate(config, configuredHosts);
   return config;
 }
 
@@ -121,7 +141,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
  * Reject configurations that would be unsafe rather than merely wrong, so the
  * failure happens at startup instead of on the first tool call.
  */
-function validate(config: ServerConfig): void {
+function validate(config: ServerConfig, configuredHosts: string[]): void {
   if (config.transport !== 'http') return;
 
   if (!config.workspaceRoot) {
@@ -132,7 +152,7 @@ function validate(config: ServerConfig): void {
     );
   }
 
-  if (config.http.allowedHosts.length === 0) {
+  if (configuredHosts.length === 0) {
     throw new Error(
       'MCP_TRANSPORT=http requires MCP_ALLOWED_HOSTS (comma-separated), e.g. ' +
       '"godot-mcp.software.nuvello.com.br". It is what blocks DNS rebinding.',

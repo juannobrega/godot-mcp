@@ -30,7 +30,10 @@ describe('loadConfig', () => {
     const config = loadConfig(httpEnv);
     expect(config.transport).toBe('http');
     expect(config.workspaceRoot).toBe('/workspace');
-    expect(config.http.allowedHosts).toEqual(['godot-mcp.software.nuvello.com.br']);
+    // Expanded with port variants, so assert the hostname is accepted rather
+    // than pinning the exact list. See test/hosts.test.ts for the expansion.
+    expect(config.http.allowedHosts).toContain('godot-mcp.software.nuvello.com.br');
+    expect(config.http.canonicalHost).toBe('godot-mcp.software.nuvello.com.br');
   });
 
   // Over HTTP, an unconfined server would take arbitrary host paths from
@@ -49,7 +52,9 @@ describe('loadConfig', () => {
 
   it('parses a comma-separated host list', () => {
     const config = loadConfig({ ...httpEnv, MCP_ALLOWED_HOSTS: ' a.com , b.com ,, ' });
-    expect(config.http.allowedHosts).toEqual(['a.com', 'b.com']);
+    expect(config.http.allowedHosts).toContain('a.com');
+    expect(config.http.allowedHosts).toContain('b.com');
+    expect(config.http.allowedHosts).not.toContain('');
   });
 
   it('falls back to defaults for unparseable numbers', () => {

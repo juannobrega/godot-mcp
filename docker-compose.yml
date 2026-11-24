@@ -36,7 +36,9 @@ services:
       MCP_HTTP_ENDPOINT: /mcp
 
       # Traefik forwards the public Host header through, so the domain Coolify
-      # assigned is exactly what has to be accepted here
+      # assigned is what has to be accepted here. Coolify's FQDN carries the
+      # port suffix (host:8086) while the proxy forwards the bare host, so the
+      # server matches these by hostname and accepts every port form.
       MCP_ALLOWED_HOSTS: ${SERVICE_FQDN_GODOT_MCP_8086}
       MCP_ALLOWED_ORIGINS: ${SERVICE_URL_GODOT_MCP_8086}
 

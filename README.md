@@ -190,6 +190,17 @@ turned into underscores, plus the port: `godot-mcp` → `GODOT_MCP_8086`.
 it, which is exactly what the two allowlists want — so the domain is never
 written down twice and never drifts from whatever Coolify assigned.
 
+### Which filesystem the tools act on
+
+**This server's own disk, not the caller's.** Every tool that takes a path acts
+on the projects in the server's workspace. There is no file transport: a project
+on your laptop is not visible to a hosted server and cannot be read or modified
+through it.
+
+So a hosted deployment is for projects that live on that host. To work on a
+project on your own machine, run the server locally over stdio — the tools then
+act on your filesystem, and the display-dependent tools work too.
+
 ### What changes when it is reachable over a network
 
 Two settings are not optional in HTTP mode, and the process **refuses to
@@ -201,6 +212,13 @@ start** without them:
 - **`MCP_ALLOWED_HOSTS`** — the accepted `Host` headers. This is what stops DNS
   rebinding, where a page on another origin points a name at this server and
   drives it from a visitor's browser.
+
+  Each entry is matched by **hostname**, with every port form accepted: an entry
+  of `example.com:8086` also admits `example.com` and `example.com:443`. A
+  reverse proxy forwards whichever form it likes, and the port says nothing about
+  who is calling — only the hostname does, so nothing is loosened by this.
+  `MCP_ALLOWED_ORIGINS` is treated the same way, since a browser omits an
+  implicit port from `Origin`.
 
 Pass `projectPath` relative to the workspace (`my-game`, not
 `/home/you/my-game`). A path that resolves outside it is refused, symlinks

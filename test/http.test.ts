@@ -3,10 +3,66 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
+import { request } from 'node:http';
+
 import { loadConfig } from '../src/config.js';
 import { buildServer, type BuiltServer } from '../src/server.js';
 import { serveHttp, type HttpHandle } from '../src/transport/http.js';
 import { silentLogger } from '../src/lib/log.js';
+
+/**
+ * Send a request with a chosen Host header.
+ *
+ * fetch() silently drops `host` — it is a forbidden header — so any test that
+ * means to exercise Host validation has to go through node:http. A fetch-based
+ * version of these assertions passes without ever spoofing anything.
+ */
+function rawRequest(
+  port: string,
+  path: string,
+  host: string,
+  body?: unknown,
+): Promise<{ status: number; text: string }> {
+  return new Promise((resolve, reject) => {
+    const payload = body === undefined ? undefined : JSON.stringify(body);
+
+    const req = request(
+      {
+        host: '127.0.0.1',
+        port,
+        path,
+        method: payload ? 'POST' : 'GET',
+        headers: {
+          Host: host,
+          Accept: 'application/json, text/event-stream',
+          ...(payload
+            ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
+            : {}),
+        },
+      },
+      (res) => {
+        let text = '';
+        res.on('data', (chunk) => { text += chunk; });
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, text }));
+      },
+    );
+
+    req.on('error', reject);
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
+
+const INITIALIZE = {
+  jsonrpc: '2.0',
+  id: 1,
+  method: 'initialize',
+  params: {
+    protocolVersion: '2025-06-18',
+    capabilities: {},
+    clientInfo: { name: 'probe', version: '0' },
+  },
+};
 
 /**
  * Exercises the transport the deployment actually uses. Everything here runs
@@ -99,18 +155,21 @@ describe('streamable http transport', () => {
 
   // DNS rebinding guard: a page on another origin resolving a name to this
   // host must not be able to drive it.
+  //
+  // Goes through node:http deliberately. The fetch-based version of this test
+  // passed while proving nothing, because fetch dropped the spoofed Host and
+  // the request then failed for want of a session instead.
   it('rejects a request with an unexpected Host header', async () => {
-    const response = await fetch(`${base}/mcp`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        accept: 'application/json, text/event-stream',
-        host: 'evil.example.com',
-      },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
-    });
+    const response = await rawRequest(PORT, '/mcp', 'evil.example.com', INITIALIZE);
 
-    expect(response.ok).toBe(false);
+    expect(response.status).toBe(403);
+    expect(response.text).toContain('Invalid Host header');
+  });
+
+  it('accepts the configured Host', async () => {
+    const response = await rawRequest(PORT, '/mcp', `127.0.0.1:${PORT}`, INITIALIZE);
+
+    expect(response.status).toBe(200);
   });
 
   it('rejects a malformed body without crashing the server', async () => {
@@ -286,5 +345,77 @@ describe('documentation route', () => {
 
     expect(response.ok).toBe(true);
     expect(await response.text()).toBe('');
+  });
+});
+
+// Regression for issue #1: deployed behind a reverse proxy whose allowlist
+// entry carried the container's internal port, every external client got
+// 403 "Invalid Host header", and the landing page advertised a closed port.
+describe('behind a reverse proxy whose allowlist carries the internal port', () => {
+  const PORT = '34520';
+  const DOMAIN = 'godot-mcp.software.nuvello.com.br';
+  let built: BuiltServer;
+  let handle: HttpHandle;
+
+  beforeAll(async () => {
+    const config = loadConfig({
+      MCP_TRANSPORT: 'http',
+      MCP_HTTP_HOST: '127.0.0.1',
+      MCP_HTTP_PORT: PORT,
+      GODOT_MCP_WORKSPACE: process.cwd(),
+      // Exactly what Coolify's SERVICE_FQDN_GODOT_MCP_<port> produced
+      MCP_ALLOWED_HOSTS: `${DOMAIN}:${PORT}`,
+    });
+    built = buildServer(config, silentLogger);
+    handle = await serveHttp(built, config);
+  });
+
+  afterAll(async () => {
+    await handle?.close();
+    await built?.dispose();
+  });
+
+  const initialize = (host: string) => rawRequest(PORT, '/mcp', host, INITIALIZE);
+
+  it('accepts the bare hostname the proxy actually forwards', async () => {
+    const response = await initialize(DOMAIN);
+
+    expect(response.status).toBe(200);
+  });
+
+  it('still accepts the port-suffixed form', async () => {
+    expect((await initialize(`${DOMAIN}:${PORT}`)).status).toBe(200);
+  });
+
+  it('still rejects a hostname that was never configured', async () => {
+    const response = await initialize('evil.example.com');
+
+    expect(response.status).toBe(403);
+    expect(response.text).toContain('Invalid Host header');
+  });
+
+  it('documents the public hostname without the internal port', async () => {
+    const html = await fetch(`http://127.0.0.1:${PORT}/`, {
+      headers: { 'x-forwarded-host': DOMAIN, 'x-forwarded-proto': 'https' },
+    }).then((r) => r.text());
+
+    expect(html).toContain(`https://${DOMAIN}/mcp`);
+    expect(html).not.toContain(`${DOMAIN}:${PORT}`);
+  });
+
+  // Even with no Host to go on, the page must not publish the internal port
+  it('omits the internal port from the fallback host too', async () => {
+    const html = await fetch(`http://127.0.0.1:${PORT}/`).then((r) => r.text());
+
+    expect(html).not.toContain(`${DOMAIN}:${PORT}`);
+    expect(html).toContain(DOMAIN);
+  });
+
+  // Point 3 of the issue: a reader must not have to guess whose disk it is
+  it('states that paths act on the server filesystem, not the caller\'s', async () => {
+    const html = await fetch(`http://127.0.0.1:${PORT}/`).then((r) => r.text());
+
+    expect(html).toContain("This server's own disk, not yours");
+    expect(html).toContain('no file transport');
   });
 });

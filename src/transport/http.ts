@@ -10,6 +10,7 @@ import type { Logger } from '../lib/log.js';
 import { introspectTools, type ToolInfo } from '../docs/introspect.js';
 import { renderDocsPage } from '../docs/page.js';
 import { SERVER_VERSION } from '../version.js';
+import { displayHost } from '../lib/hosts.js';
 import { installArgumentAliases } from './aliases.js';
 
 /** Refuse bodies large enough to be a denial of service rather than a request. */
@@ -254,9 +255,14 @@ function headerValue(req: IncomingMessage, name: string): string | undefined {
 function publicHost(req: IncomingMessage, config: ServerConfig): string {
   const forwarded = headerValue(req, 'x-forwarded-host');
   const host = forwarded ?? headerValue(req, 'host');
-  if (host && config.http.allowedHosts.includes(host)) return host;
 
-  return config.http.allowedHosts[0] ?? `localhost:${config.http.port}`;
+  // Echoed only when the allowlist already vouches for it, and shown without a
+  // port that cannot be dialled from outside.
+  if (host && config.http.allowedHosts.includes(host)) {
+    return displayHost(host, config.http.port);
+  }
+
+  return config.http.canonicalHost;
 }
 
 /** TLS is terminated at the proxy, so the scheme arrives in a header. */
